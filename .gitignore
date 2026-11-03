@@ -1,1 +1,27 @@
 
+.streamlit/secrets.toml
+gcp_service_account.json
+*.json
+!requirements.json
+
+__pycache__/
+*.py[cod]
+venv/
+env/
+.venv/
+*.egg-info/
+.pytest_cache/
+
+.vscode/
+.idea/
+*.swp
+
+.DS_Store
+Thumbs.db
+
+*.log
+logs/
+test_data/
+*.xlsx
+*.csv
+!sample*.csv
