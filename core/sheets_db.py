@@ -11,9 +11,9 @@ Responsibilities:
 
 Design:
   - Row 1 is always the header row. Data starts at row 2.
-  - Every read/write goes through header-name -> column-index mapping,
+  - Reads/writes go through header-name -> column-index mapping,
     so column order in the Sheet doesn't matter as long as names match.
-  - ID columns and "Created At" / "Timestamp" / "Updated At" values are
+  - ID columns and "Created At" / "Timestamp" / "Updated At" are
     filled by insert helpers, not by callers.
 """
 
@@ -106,9 +106,9 @@ ID_SPEC: dict[str, tuple[str, str]] = {
 
 # Columns the insert helper fills automatically (never passed by callers).
 AUTO_COLUMNS = {
-    "Created At",    # filled with now_iso() on insert
-    "Updated At",    # filled with now_iso() on insert and update
-    "Timestamp",     # audit_log only
+    "Created At",
+    "Updated At",
+    "Timestamp",
 }
 
 # Columns the ID helper fills automatically.
@@ -133,13 +133,13 @@ def _load_credentials() -> Credentials:
     Load service-account credentials.
 
     Resolution order:
-      1. st.secrets["gcp_service_account"] (dict) — Streamlit Cloud
-      2. GOOGLE_SERVICE_ACCOUNT_JSON env var (path to file) — local runs
-      3. ./service_account.json next to the repo — local dev fallback
+      1. st.secrets["gcp_service_account"] (dict)  -- Streamlit Cloud
+      2. GOOGLE_SERVICE_ACCOUNT_JSON env var (path) -- local
+      3. ./service_account.json                     -- local fallback
     """
     # 1. Streamlit secrets
     try:
-        import streamlit as st  # local import: keeps this module importable without streamlit
+        import streamlit as st
         if "gcp_service_account" in st.secrets:
             info = dict(st.secrets["gcp_service_account"])
             return Credentials.from_service_account_info(info, scopes=_SCOPES)
@@ -164,7 +164,6 @@ def _load_credentials() -> Credentials:
 
 
 def _get_spreadsheet_name() -> str:
-    """Sheet name from st.secrets, env var, or default."""
     try:
         import streamlit as st
         if "spreadsheet_name" in st.secrets:
@@ -203,15 +202,14 @@ def get_worksheet(tab: str) -> gspread.Worksheet:
 
 
 # --------------------------------------------------------------------------- #
-# Header validation (run once at startup)
+# Header validation
 # --------------------------------------------------------------------------- #
 
 def ensure_headers(tab: Optional[str] = None) -> None:
     """
     Verify every tab's header row (row 1) matches SCHEMA exactly.
-
-    If `tab` is given, only check that tab. Otherwise check all tabs.
-    Raises RuntimeError listing all mismatches at once (so you fix them in one go).
+    If `tab` is given, only check that tab. Otherwise check all.
+    Raises RuntimeError listing all mismatches at once.
     """
     tabs_to_check = [tab] if tab else list(SCHEMA)
     errors: list[str] = []
@@ -225,7 +223,6 @@ def ensure_headers(tab: Optional[str] = None) -> None:
             continue
 
         actual = ws.row_values(1)
-        # Trim trailing empties on actual; Sheets sometimes reports extra blanks
         while actual and actual[-1] == "":
             actual.pop()
 
@@ -260,7 +257,7 @@ def now_iso() -> str:
 
 
 def _next_id(tab: str, ws: gspread.Worksheet) -> str:
-    """Compute the next sequential prefixed ID for a tab (e.g. 'PUR-0042')."""
+    """Compute the next sequential prefixed ID (e.g. 'PUR-0042')."""
     if tab not in ID_SPEC:
         raise KeyError(f"Tab '{tab}' has no generated ID column.")
     prefix, col_name = ID_SPEC[tab]
@@ -270,7 +267,7 @@ def _next_id(tab: str, ws: gspread.Worksheet) -> str:
         raise RuntimeError(f"Column '{col_name}' not found in '{tab}'.")
     col_idx = hmap[col_name]
 
-    values = ws.col_values(col_idx)[1:]  # drop header
+    values = ws.col_values(col_idx)[1:]
     max_n = 0
     for v in values:
         if not v:
@@ -285,13 +282,11 @@ def _next_id(tab: str, ws: gspread.Worksheet) -> str:
 
 
 def _row_to_dict(headers: list[str], row: list[str]) -> dict[str, Any]:
-    """Pad or trim row to header length, then zip into a dict."""
     padded = list(row) + [""] * (len(headers) - len(row))
     return dict(zip(headers, padded[: len(headers)]))
 
 
 def _dict_to_row(headers: list[str], data: dict[str, Any]) -> list[Any]:
-    """Order a dict's values according to the sheet's headers."""
     out: list[Any] = []
     for h in headers:
         v = data.get(h, "")
@@ -309,12 +304,10 @@ def insert_row(tab: str, data: dict[str, Any], user_id: Optional[str] = None,
                skip_audit: bool = False) -> dict[str, Any]:
     """
     Insert a new row into `tab`.
-
-    - Auto-fills the ID column if the tab has one.
-    - Auto-fills Created At / Updated At / Timestamp with now_iso().
-    - Ignores any of those keys present in `data`.
-    - Writes to the Sheet and returns the full inserted row as a dict.
-    - Logs to audit_log unless skip_audit=True (audit_log itself passes this).
+      - Auto-fills the ID column if the tab has one.
+      - Auto-fills Created At / Updated At / Timestamp.
+      - Logs to audit_log unless skip_audit=True.
+    Returns the full inserted row as a dict.
     """
     if tab not in SCHEMA:
         raise KeyError(f"Unknown tab '{tab}'.")
@@ -324,16 +317,13 @@ def insert_row(tab: str, data: dict[str, Any], user_id: Optional[str] = None,
     if not headers:
         raise RuntimeError(f"Tab '{tab}' has no header row. Run ensure_headers().")
 
-    # Strip caller-supplied values that the helper owns
     payload = {k: v for k, v in data.items() if k not in AUTO_COLUMNS and k not in ID_COLUMNS}
 
-    # Fill auto columns
     ts = now_iso()
     for col in headers:
         if col in AUTO_COLUMNS:
             payload[col] = ts
 
-    # Generate ID after auto columns (doesn't matter, just clarity)
     if tab in ID_SPEC:
         payload[ID_SPEC[tab][1]] = _next_id(tab, ws)
 
@@ -359,17 +349,14 @@ def get_row(tab: str, record_id: str) -> Optional[dict[str, Any]]:
 
 
 def find_rows(tab: str, filters: Optional[dict[str, Any]] = None) -> list[dict[str, Any]]:
-    """
-    Return all rows matching every key=value in `filters`.
-    All values compared as strings. Empty filters returns all rows.
-    """
+    """Return all rows matching every key=value in `filters` (string compare)."""
     ws = get_worksheet(tab)
     headers = ws.row_values(1)
-    all_rows = ws.get_all_values()[1:]  # skip header
+    all_rows = ws.get_all_values()[1:]
 
     out: list[dict[str, Any]] = []
     for row in all_rows:
-        if not any(row):  # skip fully blank lines
+        if not any(row):
             continue
         rec = _row_to_dict(headers, row)
         if filters:
@@ -401,10 +388,7 @@ def _row_number_of(tab: str, record_id: str) -> Optional[int]:
 
 def update_row(tab: str, record_id: str, patch: dict[str, Any],
                user_id: Optional[str] = None) -> dict[str, Any]:
-    """
-    Update the row whose PK == record_id using fields in `patch`.
-    Returns the full updated row. Logs the diff to audit_log.
-    """
+    """Update the row whose PK == record_id using fields in `patch`."""
     if tab not in ID_SPEC:
         raise KeyError(f"Tab '{tab}' has no ID column; cannot update by ID.")
     ws = get_worksheet(tab)
@@ -416,7 +400,6 @@ def update_row(tab: str, record_id: str, patch: dict[str, Any],
 
     old_row = _row_to_dict(headers, ws.row_values(row_num))
 
-    # Strip immutable / auto columns from the patch
     clean_patch = {
         k: v for k, v in patch.items()
         if k in headers and k not in ID_COLUMNS
@@ -424,11 +407,9 @@ def update_row(tab: str, record_id: str, patch: dict[str, Any],
     if "Updated At" in headers:
         clean_patch["Updated At"] = now_iso()
 
-    # Build new row from old + patch
     new_row = dict(old_row)
     new_row.update(clean_patch)
 
-    # Write only the changed cells
     for k, v in clean_patch.items():
         if k in headers:
             col_idx = headers.index(k) + 1
@@ -448,10 +429,7 @@ def update_row(tab: str, record_id: str, patch: dict[str, Any],
 
 def delete_row(tab: str, record_id: str, user_id: Optional[str] = None,
                hard: bool = False) -> None:
-    """
-    Soft-delete by default (set Active = FALSE).
-    hard=True physically removes the row — use only if nothing references it.
-    """
+    """Soft-delete by default (Active = FALSE). hard=True physically removes the row."""
     if tab not in ID_SPEC:
         raise KeyError(f"Tab '{tab}' has no ID column.")
     ws = get_worksheet(tab)
@@ -486,7 +464,6 @@ def delete_row(tab: str, record_id: str, user_id: Optional[str] = None,
 # --------------------------------------------------------------------------- #
 
 def _record_id_of(tab: str, rec: dict[str, Any]) -> str:
-    """Pick the best ID for logging. Falls back to Key for config, else ''."""
     if tab in ID_SPEC:
         return str(rec.get(ID_SPEC[tab][1], ""))
     if tab == "config":
@@ -496,7 +473,7 @@ def _record_id_of(tab: str, rec: dict[str, Any]) -> str:
 
 def log_audit(user_id: str, action: str, table: str, record_id: str,
               old: Optional[dict[str, Any]], new: Optional[dict[str, Any]]) -> None:
-    """Append one audit-log row. Never raises on serialization issues."""
+    """Append one audit-log row. Never raises."""
     try:
         payload = {
             "Timestamp": now_iso(),
@@ -508,8 +485,7 @@ def log_audit(user_id: str, action: str, table: str, record_id: str,
             "New Value": "" if new is None else json.dumps(new, ensure_ascii=False),
         }
         insert_row("audit_log", payload, user_id=user_id, skip_audit=True)
-    except Exception as e:  # never let audit failures break the caller
-        # Print to stderr; in Streamlit this goes to the log
+    except Exception as e:
         import sys
         print(f"[audit_log] failed to append entry: {e}", file=sys.stderr)
 
@@ -519,7 +495,6 @@ def log_audit(user_id: str, action: str, table: str, record_id: str,
 # --------------------------------------------------------------------------- #
 
 def list_all(tab: str, only_active: bool = False) -> list[dict[str, Any]]:
-    """Return all rows, optionally filtering Active != FALSE."""
     rows = find_rows(tab)
     if only_active and rows and "Active" in rows[0]:
         rows = [r for r in rows if str(r.get("Active", "TRUE")).upper() != "FALSE"]
@@ -527,7 +502,7 @@ def list_all(tab: str, only_active: bool = False) -> list[dict[str, Any]]:
 
 
 def healthcheck() -> dict[str, Any]:
-    """Quick diagnostics used by the app's status banner."""
+    """Quick diagnostics for the app's status banner."""
     result: dict[str, Any] = {
         "credentials": False,
         "spreadsheet": False,
