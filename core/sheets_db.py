@@ -8,6 +8,7 @@ Responsibilities:
   - Provide generic, tab-agnostic CRUD helpers.
   - Generate prefixed sequential IDs (PUR-0001, PTY-0001, ...).
   - Append audit-log entries (JSON-serialized old/new values).
+  - Clear Streamlit caches after every write so the UI is never stale.
 
 Design:
   - Row 1 is always the header row. Data starts at row 2.
@@ -202,6 +203,19 @@ def get_worksheet(tab: str) -> gspread.Worksheet:
 
 
 # --------------------------------------------------------------------------- #
+# Streamlit cache invalidation (best-effort, never raises)
+# --------------------------------------------------------------------------- #
+
+def _invalidate_streamlit_cache() -> None:
+    """Clear Streamlit caches after any write so the UI is never stale."""
+    try:
+        import streamlit as st
+        st.cache_data.clear()
+    except Exception:
+        pass
+
+
+# --------------------------------------------------------------------------- #
 # Header validation
 # --------------------------------------------------------------------------- #
 
@@ -307,6 +321,7 @@ def insert_row(tab: str, data: dict[str, Any], user_id: Optional[str] = None,
       - Auto-fills the ID column if the tab has one.
       - Auto-fills Created At / Updated At / Timestamp.
       - Logs to audit_log unless skip_audit=True.
+      - Clears Streamlit caches so the next read is fresh.
     Returns the full inserted row as a dict.
     """
     if tab not in SCHEMA:
@@ -336,6 +351,7 @@ def insert_row(tab: str, data: dict[str, Any], user_id: Optional[str] = None,
         record_id = _record_id_of(tab, inserted)
         log_audit(user_id or "SYSTEM", "INSERT", tab, record_id, None, inserted)
 
+    _invalidate_streamlit_cache()
     return inserted
 
 
@@ -424,6 +440,7 @@ def update_row(tab: str, record_id: str, patch: dict[str, Any],
         old_row,
         new_row,
     )
+    _invalidate_streamlit_cache()
     return new_row
 
 
@@ -457,6 +474,7 @@ def delete_row(tab: str, record_id: str, user_id: Optional[str] = None,
         old_row,
         None,
     )
+    _invalidate_streamlit_cache()
 
 
 # --------------------------------------------------------------------------- #
