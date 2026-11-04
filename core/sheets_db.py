@@ -53,9 +53,8 @@ def get_client() -> gspread.Client:
     global _client
     with _client_lock:
         if _client is None:
-            # Force a 10-second timeout so it never hangs forever
             _client = gspread.authorize(_load_credentials())
-            _client.set_timeout(10) 
+            _client.set_timeout(15) 
         return _client
 
 def get_spreadsheet() -> gspread.Spreadsheet:
@@ -66,12 +65,15 @@ def get_spreadsheet() -> gspread.Spreadsheet:
             if not sheet_id:
                 raise RuntimeError("sheet_id missing in Secrets!")
             
+            # Use URL instead of open_by_key to avoid Drive API search hangs
             st.write("DEBUG: Opening by URL...")
             url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/edit"
             _spreadsheet = get_client().open_by_url(url)
             st.write("DEBUG: Opened successfully.")
             
-        return _spreadsheetdef get_worksheet(tab: str) -> gspread.Worksheet:
+        return _spreadsheet
+
+def get_worksheet(tab: str) -> gspread.Worksheet:
     if tab not in SCHEMA:
         raise KeyError(f"Unknown tab '{tab}'")
     try:
