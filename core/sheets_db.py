@@ -65,11 +65,10 @@ def get_spreadsheet() -> gspread.Spreadsheet:
             if not sheet_id:
                 raise RuntimeError("sheet_id missing in Secrets!")
             
-            # Use URL instead of open_by_key to avoid Drive API search hangs
-            st.write("DEBUG: Opening by URL...")
-            url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/edit"
-            _spreadsheet = get_client().open_by_url(url)
-            st.write("DEBUG: Opened successfully.")
+            st.write("DEBUG: Connecting via Sheets API ID...")
+            # This bypasses the Drive API URL search completely
+            _spreadsheet = get_client().open_by_key(sheet_id)
+            st.write("DEBUG: Connected successfully.")
             
         return _spreadsheet
 
