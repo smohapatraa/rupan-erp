@@ -66,17 +66,12 @@ def get_spreadsheet() -> gspread.Spreadsheet:
             if not sheet_id:
                 raise RuntimeError("sheet_id missing in Secrets!")
             
-            # Bypass Drive API search and connect directly via Sheets API
-            try:
-                # First, try the normal way
-                _spreadsheet = get_client().open_by_key(sheet_id)
-            except Exception as e:
-                # If that hangs or fails, force it via direct URL
-                url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/edit"
-                _spreadsheet = get_client().open_by_url(url)
-                
-        return _spreadsheet
-def get_worksheet(tab: str) -> gspread.Worksheet:
+            st.write("DEBUG: Opening by URL...")
+            url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/edit"
+            _spreadsheet = get_client().open_by_url(url)
+            st.write("DEBUG: Opened successfully.")
+            
+        return _spreadsheetdef get_worksheet(tab: str) -> gspread.Worksheet:
     if tab not in SCHEMA:
         raise KeyError(f"Unknown tab '{tab}'")
     try:
