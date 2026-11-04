@@ -1,7 +1,6 @@
 # core/sheets_db.py
 from __future__ import annotations
 import json
-import os
 import threading
 from datetime import datetime
 from typing import Any, Optional
@@ -45,42 +44,28 @@ _client: Optional[gspread.Client] = None
 _spreadsheet: Optional[gspread.Spreadsheet] = None
 
 def _load_credentials() -> Credentials:
-    st.write("DEBUG: [1] Loading credentials from st.secrets...")
     if "gcp_service_account" not in st.secrets:
         raise RuntimeError("gcp_service_account is missing from Streamlit Secrets!")
     info = dict(st.secrets["gcp_service_account"])
-    st.write("DEBUG: [2] Building credentials object...")
-    creds = Credentials.from_service_account_info(info, scopes=_SCOPES)
-    st.write("DEBUG: [3] Credentials built successfully.")
-    return creds
+    return Credentials.from_service_account_info(info, scopes=_SCOPES)
 
 def get_client() -> gspread.Client:
     global _client
     with _client_lock:
         if _client is None:
-            st.write("DEBUG: [4] Authorizing gspread client...")
             _client = gspread.authorize(_load_credentials())
-            st.write("DEBUG: [5] Client authorized.")
         return _client
 
 def get_spreadsheet() -> gspread.Spreadsheet:
     global _spreadsheet
     with _client_lock:
         if _spreadsheet is None:
-            try:
-                sheet_id = st.secrets.get("sheet_id")
-            except Exception:
-                sheet_id = None
-                
+            sheet_id = st.secrets.get("sheet_id")
             if sheet_id:
-                st.write(f"DEBUG: [6] Opening spreadsheet by ID: '{sheet_id}'...")
                 _spreadsheet = get_client().open_by_key(sheet_id)
             else:
-                st.write("DEBUG: [6] Opening spreadsheet by name...")
                 name = st.secrets.get("spreadsheet_name", "Rupan ERP Data")
                 _spreadsheet = get_client().open(name)
-                
-            st.write("DEBUG: [7] Spreadsheet opened successfully.")
         return _spreadsheet
 
 def get_worksheet(tab: str) -> gspread.Worksheet:
@@ -100,38 +85,27 @@ def _invalidate_streamlit_cache() -> None:
 def ensure_headers(tab: Optional[str] = None) -> None:
     tabs_to_check = [tab] if tab else list(SCHEMA)
     errors: list[str] = []
-
-    st.write("DEBUG: [8] Getting spreadsheet object...")
     sh = get_spreadsheet()
-
-    st.write("DEBUG: [9] Fetching worksheet list...")
     all_worksheets = {ws.title: ws for ws in sh.worksheets()}
-    st.write(f"DEBUG: [10] Found {len(all_worksheets)} tabs.")
 
     for name in tabs_to_check:
         expected = SCHEMA[name]
         if name not in all_worksheets:
             errors.append(f"[{name}] tab is missing.")
             continue
-
         ws = all_worksheets[name]
         actual = ws.row_values(1)
         while actual and actual[-1] == "":
             actual.pop()
-
         if actual != expected:
             errors.append(f"[{name}] header mismatch.")
-            st.write(f"DEBUG: Mismatch found in '{name}'")
-
-    st.write("DEBUG: [11] Finished checking headers.")
+    
     if errors:
         raise RuntimeError("Schema validation failed:\n  " + "\n  ".join(errors))
 
-# --- The rest of the functions (insert_row, find_rows, etc.) ---
-# (COPY FROM YOUR CURRENT FILE - THEY DON'T NEED CHANGES)
-
 def _header_map(ws): return {name: i + 1 for i, name in enumerate(ws.row_values(1)) if name}
 def now_iso(): return datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+
 def _next_id(tab, ws):
     prefix, col_name = ID_SPEC[tab]
     col_idx = _header_map(ws)[col_name]
