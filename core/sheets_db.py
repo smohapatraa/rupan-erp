@@ -53,7 +53,9 @@ def get_client() -> gspread.Client:
     global _client
     with _client_lock:
         if _client is None:
+            # Force a 10-second timeout so it never hangs forever
             _client = gspread.authorize(_load_credentials())
+            _client.set_timeout(10) 
         return _client
 
 def get_spreadsheet() -> gspread.Spreadsheet:
@@ -61,11 +63,9 @@ def get_spreadsheet() -> gspread.Spreadsheet:
     with _client_lock:
         if _spreadsheet is None:
             sheet_id = st.secrets.get("sheet_id")
-            if sheet_id:
-                _spreadsheet = get_client().open_by_key(sheet_id)
-            else:
-                name = st.secrets.get("spreadsheet_name", "Rupan ERP Data")
-                _spreadsheet = get_client().open(name)
+            if not sheet_id:
+                raise RuntimeError("sheet_id missing in Secrets!")
+            _spreadsheet = get_client().open_by_key(sheet_id)
         return _spreadsheet
 
 def get_worksheet(tab: str) -> gspread.Worksheet:
