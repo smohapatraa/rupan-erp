@@ -45,17 +45,11 @@ _client: Optional[gspread.Client] = None
 _spreadsheet: Optional[gspread.Spreadsheet] = None
 
 def _load_credentials() -> Credentials:
-    # Force reading from st.secrets only
     st.write("DEBUG: Loading credentials from st.secrets...")
     if "gcp_service_account" not in st.secrets:
         raise RuntimeError("gcp_service_account is missing from Streamlit Secrets!")
     info = dict(st.secrets["gcp_service_account"])
     return Credentials.from_service_account_info(info, scopes=_SCOPES)
-
-def _get_spreadsheet_name() -> str:
-    if "spreadsheet_name" not in st.secrets:
-        raise RuntimeError("spreadsheet_name is missing from Streamlit Secrets!")
-    return str(st.secrets["spreadsheet_name"])
 
 def get_client() -> gspread.Client:
     global _client
@@ -69,9 +63,24 @@ def get_spreadsheet() -> gspread.Spreadsheet:
     global _spreadsheet
     with _client_lock:
         if _spreadsheet is None:
-            name = _get_spreadsheet_name()
-            st.write(f"DEBUG: Opening spreadsheet by name: '{name}'...")
-            _spreadsheet = get_client().open(name)
+            # Try to read the sheet_id directly from Streamlit Secrets
+            try:
+                sheet_id = st.secrets.get("sheet_id")
+            except Exception:
+                sheet_id = None
+                
+            if sheet_id:
+                st.write(f"DEBUG: Opening spreadsheet directly by ID: '{sheet_id}'...")
+                _spreadsheet = get_client().open_by_key(sheet_id)
+            else:
+                # Fallback to name search if ID is missing
+                try:
+                    name = str(st.secrets["spreadsheet_name"])
+                except Exception:
+                    name = os.environ.get("SPREADSHEET_NAME", "Rupan ERP Data")
+                st.write(f"DEBUG: Opening spreadsheet by name: '{name}'...")
+                _spreadsheet = get_client().open(name)
+                
             st.write("DEBUG: Spreadsheet opened successfully.")
         return _spreadsheet
 
