@@ -132,13 +132,11 @@ _spreadsheet: Optional[gspread.Spreadsheet] = None
 def _load_credentials() -> Credentials:
     """
     Load service-account credentials.
-
     Resolution order:
       1. st.secrets["gcp_service_account"] (dict)  -- Streamlit Cloud
       2. GOOGLE_SERVICE_ACCOUNT_JSON env var (path) -- local
       3. ./service_account.json                     -- local fallback
     """
-    # 1. Streamlit secrets
     try:
         import streamlit as st
         if "gcp_service_account" in st.secrets:
@@ -147,12 +145,10 @@ def _load_credentials() -> Credentials:
     except Exception:
         pass
 
-    # 2. Environment variable pointing at a JSON file
     path = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON")
     if path and os.path.isfile(path):
         return Credentials.from_service_account_file(path, scopes=_SCOPES)
 
-    # 3. Local fallback
     fallback = os.path.join(os.getcwd(), "service_account.json")
     if os.path.isfile(fallback):
         return Credentials.from_service_account_file(fallback, scopes=_SCOPES)
@@ -216,41 +212,52 @@ def _invalidate_streamlit_cache() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Header validation
+# Header validation (Optimized: 1 API call for all tabs)
 # --------------------------------------------------------------------------- #
 
 def ensure_headers(tab: Optional[str] = None) -> None:
     """
     Verify every tab's header row (row 1) matches SCHEMA exactly.
-    If `tab` is given, only check that tab. Otherwise check all.
-    Raises RuntimeError listing all mismatches at once.
+    Uses a single API call to fetch all worksheets, then reads headers
+    to avoid the 11-call sequential bottleneck.
     """
     tabs_to_check = [tab] if tab else list(SCHEMA)
     errors: list[str] = []
 
+    try:
+        sh = get_spreadsheet()
+        # Get all worksheets in one API call
+        all_worksheets = {ws.title: ws for ws in sh.worksheets()}
+    except Exception as e:
+        raise RuntimeError(f"Failed to connect to spreadsheet: {e}")
+
     for name in tabs_to_check:
         expected = SCHEMA[name]
-        try:
-            ws = get_worksheet(name)
-        except RuntimeError as e:
-            errors.append(str(e))
+        
+        if name not in all_worksheets:
+            errors.append(f"[{name}] tab is missing from the spreadsheet.")
             continue
 
-        actual = ws.row_values(1)
-        while actual and actual[-1] == "":
-            actual.pop()
+        try:
+            ws = all_worksheets[name]
+            # row_values(1) is fast, but we only call it for tabs that exist
+            actual = ws.row_values(1)
+            while actual and actual[-1] == "":
+                actual.pop()
 
-        if actual != expected:
-            missing = [h for h in expected if h not in actual]
-            extra = [h for h in actual if h not in expected]
-            msg = f"[{name}] header mismatch."
-            if missing:
-                msg += f" Missing: {missing}."
-            if extra:
-                msg += f" Extra: {extra}."
-            if not missing and not extra:
-                msg += " Same columns but wrong order."
-            errors.append(msg)
+            if actual != expected:
+                missing = [h for h in expected if h not in actual]
+                extra = [h for h in actual if h not in expected]
+                msg = f"[{name}] header mismatch."
+                if missing:
+                    msg += f" Missing: {missing}."
+                if extra:
+                    msg += f" Extra: {extra}."
+                if not missing and not extra:
+                    msg += " Same columns but wrong order."
+                errors.append(msg)
+        except Exception as e:
+            errors.append(f"[{name}] error reading headers: {e}")
 
     if errors:
         raise RuntimeError("Schema validation failed:\n  " + "\n  ".join(errors))
@@ -316,14 +323,7 @@ def _dict_to_row(headers: list[str], data: dict[str, Any]) -> list[Any]:
 
 def insert_row(tab: str, data: dict[str, Any], user_id: Optional[str] = None,
                skip_audit: bool = False) -> dict[str, Any]:
-    """
-    Insert a new row into `tab`.
-      - Auto-fills the ID column if the tab has one.
-      - Auto-fills Created At / Updated At / Timestamp.
-      - Logs to audit_log unless skip_audit=True.
-      - Clears Streamlit caches so the next read is fresh.
-    Returns the full inserted row as a dict.
-    """
+    """Insert a new row into `tab`."""
     if tab not in SCHEMA:
         raise KeyError(f"Unknown tab '{tab}'.")
 
@@ -509,7 +509,7 @@ def log_audit(user_id: str, action: str, table: str, record_id: str,
 
 
 # --------------------------------------------------------------------------- #
-# Convenience
+# Convenience (Optimized healthcheck)
 # --------------------------------------------------------------------------- #
 
 def list_all(tab: str, only_active: bool = False) -> list[dict[str, Any]]:
@@ -532,18 +532,24 @@ def healthcheck() -> dict[str, Any]:
     except Exception as e:
         result["error"] = f"credentials: {e}"
         return result
+    
     try:
         sh = get_spreadsheet()
         result["spreadsheet"] = True
-        existing = {ws.title for ws in sh.worksheets()}
+        
+        # Fetch all tabs at once
+        all_worksheets = {ws.title: ws for ws in sh.worksheets()}
+        
         for tab in SCHEMA:
-            if tab not in existing:
+            if tab not in all_worksheets:
                 result["tabs"][tab] = "missing"
                 continue
-            ws = sh.worksheet(tab)
+            
+            ws = all_worksheets[tab]
             header = ws.row_values(1)
             while header and header[-1] == "":
                 header.pop()
+            
             result["tabs"][tab] = "ok" if header == SCHEMA[tab] else "header-mismatch"
     except Exception as e:
         result["error"] = f"spreadsheet: {e}"
