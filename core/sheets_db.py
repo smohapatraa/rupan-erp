@@ -1,237 +1,129 @@
 # core/sheets_db.py
-"""
-Google Sheets DB layer for Rupan ERP.
-
-Responsibilities:
-  - Authenticate with a service account and open the spreadsheet.
-  - Validate that every tab has the exact headers defined in SCHEMA.
-  - Provide generic, tab-agnostic CRUD helpers.
-  - Generate prefixed sequential IDs (PUR-0001, PTY-0001, ...).
-  - Append audit-log entries (JSON-serialized old/new values).
-  - Clear Streamlit caches after every write so the UI is never stale.
-
-Design:
-  - Row 1 is always the header row. Data starts at row 2.
-  - Reads/writes go through header-name -> column-index mapping,
-    so column order in the Sheet doesn't matter as long as names match.
-  - ID columns and "Created At" / "Timestamp" / "Updated At" are
-    filled by insert helpers, not by callers.
-"""
-
 from __future__ import annotations
-
 import json
 import os
 import threading
 from datetime import datetime
 from typing import Any, Optional
-
 import gspread
 from google.oauth2.service_account import Credentials
-
-# --------------------------------------------------------------------------- #
-# Schema: single source of truth for every tab
-# --------------------------------------------------------------------------- #
+import streamlit as st  # We need this for the debug prints
 
 SCHEMA: dict[str, list[str]] = {
-    "users": [
-        "User ID", "Username", "Password Hash", "Role", "Active", "Created At",
-    ],
-    "farm_master": [
-        "Farm ID", "Farm Name", "Location", "Owner", "Contact",
-        "Active", "Created At",
-    ],
-    "party_master": [
-        "Party ID", "Party Name", "Contact", "Address", "GSTIN",
-        "Active", "Created At",
-    ],
-    "item_master": [
-        "Item ID", "Item Name", "Unit", "Default Price",
-        "Active", "Created At",
-    ],
-    "transporter_master": [
-        "Transporter ID", "Name", "Contact", "Vehicle Count",
-        "Active", "Created At",
-    ],
-    "employee_master": [
-        "Employee ID", "Name", "Role", "Contact",
-        "Active", "Created At",
-    ],
-    "purchases": [
-        "Purchase ID",
-        "Month", "Year", "Date", "Invoice no",
-        "Party ID", "Party name",
-        "Item ID", "Item",
-        "Moisture %", "Qty", "Unit", "price", "Amount",
-        "CGST", "SGST", "IGST", "ROUND OFF", "Total amount",
-        "Moisture Qty", "Actual Qty",
-        "Employee ID", "Employee Name",
-        "Transport Type", "Vehicle No",
-        "Transporter ID", "Transporter Name",
-        "Starting Km", "End Km", "Km covered",
-        "Transportation Amount", "Other Charges", "Places Visited",
-        "Created At",
-    ],
-    "purchase_items": [
-        "Line ID", "Purchase ID",
-        "Item ID", "Item",
-        "Qty", "Unit", "price", "Amount",
-        "Moisture %", "Moisture Qty", "Actual Qty",
-        "CGST", "SGST", "IGST", "ROUND OFF", "Total amount",
-    ],
-    "audit_log": [
-        "Log ID", "Timestamp", "User ID", "Action",
-        "Table", "Record ID", "Old Value", "New Value",
-    ],
-    "config": [
-        "Key", "Value", "Description", "Updated At",
-    ],
-    "state_master": [
-        "State ID", "State Name", "State Code", "Active",
-    ],
+    "users": ["User ID", "Username", "Password Hash", "Role", "Active", "Created At"],
+    "farm_master": ["Farm ID", "Farm Name", "Location", "Owner", "Contact", "Active", "Created At"],
+    "party_master": ["Party ID", "Party Name", "Contact", "Address", "GSTIN", "Active", "Created At"],
+    "item_master": ["Item ID", "Item Name", "Unit", "Default Price", "Active", "Created At"],
+    "transporter_master": ["Transporter ID", "Name", "Contact", "Vehicle Count", "Active", "Created At"],
+    "employee_master": ["Employee ID", "Name", "Role", "Contact", "Active", "Created At"],
+    "purchases": ["Purchase ID", "Month", "Year", "Date", "Invoice no", "Party ID", "Party name", "Item ID", "Item", "Moisture %", "Qty", "Unit", "price", "Amount", "CGST", "SGST", "IGST", "ROUND OFF", "Total amount", "Moisture Qty", "Actual Qty", "Employee ID", "Employee Name", "Transport Type", "Vehicle No", "Transporter ID", "Transporter Name", "Starting Km", "End Km", "Km covered", "Transportation Amount", "Other Charges", "Places Visited", "Created At"],
+    "purchase_items": ["Line ID", "Purchase ID", "Item ID", "Item", "Qty", "Unit", "price", "Amount", "Moisture %", "Moisture Qty", "Actual Qty", "CGST", "SGST", "IGST", "ROUND OFF", "Total amount"],
+    "audit_log": ["Log ID", "Timestamp", "User ID", "Action", "Table", "Record ID", "Old Value", "New Value"],
+    "config": ["Key", "Value", "Description", "Updated At"],
+    "state_master": ["State ID", "State Name", "State Code", "Active"],
 }
 
-# tab -> (id_prefix, id_column_name). Tabs absent here have no generated ID.
 ID_SPEC: dict[str, tuple[str, str]] = {
-    "users":              ("USR", "User ID"),
-    "farm_master":        ("FRM", "Farm ID"),
-    "party_master":       ("PTY", "Party ID"),
-    "item_master":        ("ITM", "Item ID"),
+    "users": ("USR", "User ID"),
+    "farm_master": ("FRM", "Farm ID"),
+    "party_master": ("PTY", "Party ID"),
+    "item_master": ("ITM", "Item ID"),
     "transporter_master": ("TRN", "Transporter ID"),
-    "employee_master":    ("EMP", "Employee ID"),
-    "purchases":          ("PUR", "Purchase ID"),
-    "purchase_items":     ("PIT", "Line ID"),
-    "audit_log":          ("LOG", "Log ID"),
-    "state_master":       ("STM", "State ID"),
+    "employee_master": ("EMP", "Employee ID"),
+    "purchases": ("PUR", "Purchase ID"),
+    "purchase_items": ("PIT", "Line ID"),
+    "audit_log": ("LOG", "Log ID"),
+    "state_master": ("STM", "State ID"),
 }
 
-# Columns the insert helper fills automatically (never passed by callers).
-AUTO_COLUMNS = {
-    "Created At",
-    "Updated At",
-    "Timestamp",
-}
-
-# Columns the ID helper fills automatically.
+AUTO_COLUMNS = {"Created At", "Updated At", "Timestamp"}
 ID_COLUMNS = {col for _, col in ID_SPEC.values()}
-
-# --------------------------------------------------------------------------- #
-# Connection
-# --------------------------------------------------------------------------- #
-
-_SCOPES = [
-    "https://www.googleapis.com/auth/spreadsheets",
-    "https://www.googleapis.com/auth/drive",
-]
+_SCOPES = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
 
 _client_lock = threading.Lock()
 _client: Optional[gspread.Client] = None
 _spreadsheet: Optional[gspread.Spreadsheet] = None
 
-
 def _load_credentials() -> Credentials:
-    """
-    Load service-account credentials.
-    Resolution order:
-      1. st.secrets["gcp_service_account"] (dict)  -- Streamlit Cloud
-      2. GOOGLE_SERVICE_ACCOUNT_JSON env var (path) -- local
-      3. ./service_account.json                     -- local fallback
-    """
+    st.write("DEBUG: Loading credentials...")
     try:
-        import streamlit as st
         if "gcp_service_account" in st.secrets:
             info = dict(st.secrets["gcp_service_account"])
+            st.write("DEBUG: Found st.secrets['gcp_service_account']")
             return Credentials.from_service_account_info(info, scopes=_SCOPES)
-    except Exception:
-        pass
-
+    except Exception as e:
+        st.write(f"DEBUG ERROR loading secrets: {e}")
+        
     path = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON")
     if path and os.path.isfile(path):
         return Credentials.from_service_account_file(path, scopes=_SCOPES)
-
     fallback = os.path.join(os.getcwd(), "service_account.json")
     if os.path.isfile(fallback):
         return Credentials.from_service_account_file(fallback, scopes=_SCOPES)
-
-    raise RuntimeError(
-        "No service-account credentials found. Provide st.secrets['gcp_service_account'], "
-        "or set GOOGLE_SERVICE_ACCOUNT_JSON to a JSON key path, or place service_account.json "
-        "in the working directory."
-    )
-
+    raise RuntimeError("No credentials found")
 
 def _get_spreadsheet_name() -> str:
     try:
-        import streamlit as st
         if "spreadsheet_name" in st.secrets:
             return str(st.secrets["spreadsheet_name"])
     except Exception:
         pass
     return os.environ.get("SPREADSHEET_NAME", "Rupan ERP Data")
 
-
 def get_client() -> gspread.Client:
     global _client
     with _client_lock:
         if _client is None:
+            st.write("DEBUG: Authorizing gspread client...")
             _client = gspread.authorize(_load_credentials())
         return _client
-
 
 def get_spreadsheet() -> gspread.Spreadsheet:
     global _spreadsheet
     with _client_lock:
         if _spreadsheet is None:
-            _spreadsheet = get_client().open(_get_spreadsheet_name())
+            name = _get_spreadsheet_name()
+            st.write(f"DEBUG: Opening spreadsheet '{name}'...")
+            _spreadsheet = get_client().open(name)
+            st.write("DEBUG: Spreadsheet opened successfully.")
         return _spreadsheet
-
 
 def get_worksheet(tab: str) -> gspread.Worksheet:
     if tab not in SCHEMA:
-        raise KeyError(f"Unknown tab '{tab}'. Known tabs: {sorted(SCHEMA)}")
+        raise KeyError(f"Unknown tab '{tab}'")
     try:
         return get_spreadsheet().worksheet(tab)
     except gspread.WorksheetNotFound:
-        raise RuntimeError(
-            f"Tab '{tab}' does not exist in the spreadsheet. "
-            f"Run setup_sheets.py to create all tabs."
-        )
-
-
-# --------------------------------------------------------------------------- #
-# Streamlit cache invalidation (best-effort, never raises)
-# --------------------------------------------------------------------------- #
+        raise RuntimeError(f"Tab '{tab}' does not exist.")
 
 def _invalidate_streamlit_cache() -> None:
-    """Clear Streamlit caches after any write so the UI is never stale."""
     try:
-        import streamlit as st
         st.cache_data.clear()
     except Exception:
         pass
 
-
-# --------------------------------------------------------------------------- #
-# Header validation (Optimized: 1 API call for all tabs)
-# --------------------------------------------------------------------------- #
-
 def ensure_headers(tab: Optional[str] = None) -> None:
-    """
-    Verify every tab's header row (row 1) matches SCHEMA exactly.
-    Uses a single API call to fetch all worksheets, then reads headers
-    to avoid the 11-call sequential bottleneck.
-    """
+    """Verify every tab's header row. WITH DEBUG PRINTS."""
     tabs_to_check = [tab] if tab else list(SCHEMA)
     errors: list[str] = []
 
+    st.write("DEBUG: Getting spreadsheet object...")
     try:
         sh = get_spreadsheet()
-        # Get all worksheets in one API call
-        all_worksheets = {ws.title: ws for ws in sh.worksheets()}
     except Exception as e:
-        raise RuntimeError(f"Failed to connect to spreadsheet: {e}")
+        st.write(f"DEBUG ERROR getting spreadsheet: {e}")
+        raise
+
+    st.write("DEBUG: Fetching worksheet list (this is where it usually hangs)...")
+    try:
+        all_worksheets = {ws.title: ws for ws in sh.worksheets()}
+        st.write(f"DEBUG: Found {len(all_worksheets)} tabs.")
+    except Exception as e:
+        st.write(f"DEBUG ERROR fetching worksheets: {e}")
+        raise
 
     for name in tabs_to_check:
+        st.write(f"DEBUG: Checking headers for tab '{name}'...")
         expected = SCHEMA[name]
         
         if name not in all_worksheets:
@@ -240,7 +132,6 @@ def ensure_headers(tab: Optional[str] = None) -> None:
 
         try:
             ws = all_worksheets[name]
-            # row_values(1) is fast, but we only call it for tabs that exist
             actual = ws.row_values(1)
             while actual and actual[-1] == "":
                 actual.pop()
@@ -249,308 +140,18 @@ def ensure_headers(tab: Optional[str] = None) -> None:
                 missing = [h for h in expected if h not in actual]
                 extra = [h for h in actual if h not in expected]
                 msg = f"[{name}] header mismatch."
-                if missing:
-                    msg += f" Missing: {missing}."
-                if extra:
-                    msg += f" Extra: {extra}."
-                if not missing and not extra:
-                    msg += " Same columns but wrong order."
+                if missing: msg += f" Missing: {missing}."
+                if extra: msg += f" Extra: {extra}."
+                if not missing and not extra: msg += " Same columns but wrong order."
                 errors.append(msg)
+                st.write(f"DEBUG: Mismatch found in '{name}'")
         except Exception as e:
             errors.append(f"[{name}] error reading headers: {e}")
+            st.write(f"DEBUG ERROR reading headers for '{name}': {e}")
 
+    st.write("DEBUG: Finished checking all headers.")
     if errors:
         raise RuntimeError("Schema validation failed:\n  " + "\n  ".join(errors))
 
-
-# --------------------------------------------------------------------------- #
-# Helpers
-# --------------------------------------------------------------------------- #
-
-def _header_map(ws: gspread.Worksheet) -> dict[str, int]:
-    """Return {column_name: 1-based_index} from row 1."""
-    headers = ws.row_values(1)
-    return {name: i + 1 for i, name in enumerate(headers) if name}
-
-
-def now_iso() -> str:
-    return datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
-
-
-def _next_id(tab: str, ws: gspread.Worksheet) -> str:
-    """Compute the next sequential prefixed ID (e.g. 'PUR-0042')."""
-    if tab not in ID_SPEC:
-        raise KeyError(f"Tab '{tab}' has no generated ID column.")
-    prefix, col_name = ID_SPEC[tab]
-
-    hmap = _header_map(ws)
-    if col_name not in hmap:
-        raise RuntimeError(f"Column '{col_name}' not found in '{tab}'.")
-    col_idx = hmap[col_name]
-
-    values = ws.col_values(col_idx)[1:]
-    max_n = 0
-    for v in values:
-        if not v:
-            continue
-        try:
-            n = int(v.split("-", 1)[1])
-            if n > max_n:
-                max_n = n
-        except (IndexError, ValueError):
-            continue
-    return f"{prefix}-{max_n + 1:04d}"
-
-
-def _row_to_dict(headers: list[str], row: list[str]) -> dict[str, Any]:
-    padded = list(row) + [""] * (len(headers) - len(row))
-    return dict(zip(headers, padded[: len(headers)]))
-
-
-def _dict_to_row(headers: list[str], data: dict[str, Any]) -> list[Any]:
-    out: list[Any] = []
-    for h in headers:
-        v = data.get(h, "")
-        if isinstance(v, (dict, list)):
-            v = json.dumps(v, ensure_ascii=False)
-        out.append(v if v is not None else "")
-    return out
-
-
-# --------------------------------------------------------------------------- #
-# CRUD
-# --------------------------------------------------------------------------- #
-
-def insert_row(tab: str, data: dict[str, Any], user_id: Optional[str] = None,
-               skip_audit: bool = False) -> dict[str, Any]:
-    """Insert a new row into `tab`."""
-    if tab not in SCHEMA:
-        raise KeyError(f"Unknown tab '{tab}'.")
-
-    ws = get_worksheet(tab)
-    headers = ws.row_values(1)
-    if not headers:
-        raise RuntimeError(f"Tab '{tab}' has no header row. Run ensure_headers().")
-
-    payload = {k: v for k, v in data.items() if k not in AUTO_COLUMNS and k not in ID_COLUMNS}
-
-    ts = now_iso()
-    for col in headers:
-        if col in AUTO_COLUMNS:
-            payload[col] = ts
-
-    if tab in ID_SPEC:
-        payload[ID_SPEC[tab][1]] = _next_id(tab, ws)
-
-    row = _dict_to_row(headers, payload)
-    ws.append_row(row, value_input_option="USER_ENTERED")
-
-    inserted = _row_to_dict(headers, [str(x) for x in row])
-
-    if not skip_audit and tab != "audit_log":
-        record_id = _record_id_of(tab, inserted)
-        log_audit(user_id or "SYSTEM", "INSERT", tab, record_id, None, inserted)
-
-    _invalidate_streamlit_cache()
-    return inserted
-
-
-def get_row(tab: str, record_id: str) -> Optional[dict[str, Any]]:
-    """Fetch a single row by its primary key. Returns None if not found."""
-    if tab not in ID_SPEC:
-        raise KeyError(f"Tab '{tab}' has no ID column; use find_rows() instead.")
-    _, id_col = ID_SPEC[tab]
-    matches = find_rows(tab, {id_col: record_id})
-    return matches[0] if matches else None
-
-
-def find_rows(tab: str, filters: Optional[dict[str, Any]] = None) -> list[dict[str, Any]]:
-    """Return all rows matching every key=value in `filters` (string compare)."""
-    ws = get_worksheet(tab)
-    headers = ws.row_values(1)
-    all_rows = ws.get_all_values()[1:]
-
-    out: list[dict[str, Any]] = []
-    for row in all_rows:
-        if not any(row):
-            continue
-        rec = _row_to_dict(headers, row)
-        if filters:
-            ok = True
-            for k, v in filters.items():
-                if str(rec.get(k, "")) != str(v):
-                    ok = False
-                    break
-            if not ok:
-                continue
-        out.append(rec)
-    return out
-
-
-def _row_number_of(tab: str, record_id: str) -> Optional[int]:
-    """1-based sheet row number (including header) for a PK, or None."""
-    if tab not in ID_SPEC:
-        raise KeyError(f"Tab '{tab}' has no ID column.")
-    _, id_col = ID_SPEC[tab]
-    ws = get_worksheet(tab)
-    hmap = _header_map(ws)
-    col_idx = hmap[id_col]
-    col_values = ws.col_values(col_idx)
-    for i, v in enumerate(col_values[1:], start=2):
-        if v == record_id:
-            return i
-    return None
-
-
-def update_row(tab: str, record_id: str, patch: dict[str, Any],
-               user_id: Optional[str] = None) -> dict[str, Any]:
-    """Update the row whose PK == record_id using fields in `patch`."""
-    if tab not in ID_SPEC:
-        raise KeyError(f"Tab '{tab}' has no ID column; cannot update by ID.")
-    ws = get_worksheet(tab)
-    headers = ws.row_values(1)
-
-    row_num = _row_number_of(tab, record_id)
-    if row_num is None:
-        raise KeyError(f"{tab} record '{record_id}' not found.")
-
-    old_row = _row_to_dict(headers, ws.row_values(row_num))
-
-    clean_patch = {
-        k: v for k, v in patch.items()
-        if k in headers and k not in ID_COLUMNS
-    }
-    if "Updated At" in headers:
-        clean_patch["Updated At"] = now_iso()
-
-    new_row = dict(old_row)
-    new_row.update(clean_patch)
-
-    for k, v in clean_patch.items():
-        if k in headers:
-            col_idx = headers.index(k) + 1
-            val = json.dumps(v, ensure_ascii=False) if isinstance(v, (dict, list)) else v
-            ws.update_cell(row_num, col_idx, val)
-
-    log_audit(
-        user_id or "SYSTEM",
-        "UPDATE",
-        tab,
-        record_id,
-        old_row,
-        new_row,
-    )
-    _invalidate_streamlit_cache()
-    return new_row
-
-
-def delete_row(tab: str, record_id: str, user_id: Optional[str] = None,
-               hard: bool = False) -> None:
-    """Soft-delete by default (Active = FALSE). hard=True physically removes the row."""
-    if tab not in ID_SPEC:
-        raise KeyError(f"Tab '{tab}' has no ID column.")
-    ws = get_worksheet(tab)
-    headers = ws.row_values(1)
-
-    row_num = _row_number_of(tab, record_id)
-    if row_num is None:
-        raise KeyError(f"{tab} record '{record_id}' not found.")
-
-    old_row = _row_to_dict(headers, ws.row_values(row_num))
-
-    if hard:
-        ws.delete_rows(row_num)
-    else:
-        if "Active" not in headers:
-            raise RuntimeError(f"Tab '{tab}' has no 'Active' column; use hard=True.")
-        col_idx = headers.index("Active") + 1
-        ws.update_cell(row_num, col_idx, "FALSE")
-
-    log_audit(
-        user_id or "SYSTEM",
-        "HARD_DELETE" if hard else "SOFT_DELETE",
-        tab,
-        record_id,
-        old_row,
-        None,
-    )
-    _invalidate_streamlit_cache()
-
-
-# --------------------------------------------------------------------------- #
-# Audit log
-# --------------------------------------------------------------------------- #
-
-def _record_id_of(tab: str, rec: dict[str, Any]) -> str:
-    if tab in ID_SPEC:
-        return str(rec.get(ID_SPEC[tab][1], ""))
-    if tab == "config":
-        return str(rec.get("Key", ""))
-    return ""
-
-
-def log_audit(user_id: str, action: str, table: str, record_id: str,
-              old: Optional[dict[str, Any]], new: Optional[dict[str, Any]]) -> None:
-    """Append one audit-log row. Never raises."""
-    try:
-        payload = {
-            "Timestamp": now_iso(),
-            "User ID":   user_id,
-            "Action":    action,
-            "Table":     table,
-            "Record ID": record_id,
-            "Old Value": "" if old is None else json.dumps(old, ensure_ascii=False),
-            "New Value": "" if new is None else json.dumps(new, ensure_ascii=False),
-        }
-        insert_row("audit_log", payload, user_id=user_id, skip_audit=True)
-    except Exception as e:
-        import sys
-        print(f"[audit_log] failed to append entry: {e}", file=sys.stderr)
-
-
-# --------------------------------------------------------------------------- #
-# Convenience (Optimized healthcheck)
-# --------------------------------------------------------------------------- #
-
-def list_all(tab: str, only_active: bool = False) -> list[dict[str, Any]]:
-    rows = find_rows(tab)
-    if only_active and rows and "Active" in rows[0]:
-        rows = [r for r in rows if str(r.get("Active", "TRUE")).upper() != "FALSE"]
-    return rows
-
-
-def healthcheck() -> dict[str, Any]:
-    """Quick diagnostics for the app's status banner."""
-    result: dict[str, Any] = {
-        "credentials": False,
-        "spreadsheet": False,
-        "tabs": {},
-    }
-    try:
-        get_client()
-        result["credentials"] = True
-    except Exception as e:
-        result["error"] = f"credentials: {e}"
-        return result
-    
-    try:
-        sh = get_spreadsheet()
-        result["spreadsheet"] = True
-        
-        # Fetch all tabs at once
-        all_worksheets = {ws.title: ws for ws in sh.worksheets()}
-        
-        for tab in SCHEMA:
-            if tab not in all_worksheets:
-                result["tabs"][tab] = "missing"
-                continue
-            
-            ws = all_worksheets[tab]
-            header = ws.row_values(1)
-            while header and header[-1] == "":
-                header.pop()
-            
-            result["tabs"][tab] = "ok" if header == SCHEMA[tab] else "header-mismatch"
-    except Exception as e:
-        result["error"] = f"spreadsheet: {e}"
-    return result
+# ... [Keep the rest of the file exactly the same as before: _header_map, now_iso, _next_id, _row_to_dict, _dict_to_row, insert_row, get_row, find_rows, _row_number_of, update_row, delete_row, _record_id_of, log_audit, list_all, healthcheck] ...
+# COPY THE REST OF THE FILE FROM YOUR CURRENT VERSION DOWN BELOW THIS LINE
