@@ -1,68 +1,84 @@
-"""Authentication with bcrypt + streamlit session."""
+# core/auth.py
 import bcrypt
 import streamlit as st
 from datetime import datetime
-from .sheets_db import read_table, update_row
-from .config import COOKIE_NAME, COOKIE_EXPIRY, APP_SECRET
+from typing import Optional, Dict, Any
+
+from core import sheets_db
 
 def hash_password(password: str) -> str:
-    return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+    """Hash a plain text password using bcrypt."""
+    salt = bcrypt.gensalt()
+    return bcrypt.hashpw(password.encode('utf-8'), salt).decode('utf-8')
 
 def verify_password(password: str, hashed: str) -> bool:
+    """Check if a plain text password matches the hash."""
     try:
-        return bcrypt.checkpw(password.encode(), hashed.encode())
+        return bcrypt.checkpw(password.encode('utf-8'), hashed.encode('utf-8'))
     except Exception:
         return False
 
-def authenticate(username: str, password: str):
-    df = read_table("users")
-    if df.empty:
-        return None
-    row = df[df["username"] == username]
-    if row.empty:
-        return None
-    user = row.iloc[0].to_dict()
-    if str(user.get("is_active", "")).upper() not in ("TRUE", "1", "YES"):
-        return None
-    if not verify_password(password, user["password_hash"]):
-        return None
+def login(username: str, password: str) -> Optional[Dict[str, Any]]:
+    """
+    Attempt to log in. Returns the user dict if successful, None otherwise.
+    """
     try:
-        update_row("users", "user_id", user["user_id"],
-                   {"last_login": datetime.now().isoformat(timespec="seconds")},
-                   expected_version=None)
-    except Exception:
-        pass
-    return user
-
-def login_session(user: dict):
-    st.session_state["user"] = {
-        "username": user["username"],
-        "full_name": user["full_name"],
-        "role": user["role"],
-        "farm_access": user.get("farm_access", "ALL"),
-    }
-    st.session_state["logged_in"] = True
-
-def logout():
-    for k in ("user", "logged_in"):
-        st.session_state.pop(k, None)
-
-def current_user():
-    return st.session_state.get("user")
+        users = sheets_db.find_rows("users", {"Username": username})
+        if not users:
+            return None
+            
+        user = users[0]
+        
+        # Check if active
+        if str(user.get("Active", "TRUE")).upper() == "FALSE":
+            return None
+            
+        # Verify password
+        if verify_password(password, user.get("Password Hash", "")):
+            return user
+            
+        return None
+    except Exception as e:
+        st.error(f"Login error: {e}")
+        return None
 
 def require_login():
-    if not st.session_state.get("logged_in"):
-        st.warning("Please log in first.")
-        st.switch_page("pages/01_Login.py")
+    """
+    Streamlit guard. Stops the app if the user is not logged in.
+    """
+    if "user" not in st.session_state:
+        st.warning("Please log in to access this page.")
         st.stop()
 
-def require_role(*allowed_roles):
-    require_login()
-    user = current_user()
-    if user["role"] not in allowed_roles:
-        st.error(f"Access denied. Required role: {', '.join(allowed_roles)}")
-        st.stop()
+def current_user() -> Dict[str, Any]:
+    """Get the currently logged in user from session state."""
+    return st.session_state.get("user", {})
 
-def has_role(*roles) -> bool:
-    user = current_user()
-    return user and user["role"] in roles
+def logout():
+    """Log out the current user."""
+    if "user" in st.session_state:
+        del st.session_state["user"]
+    st.rerun()
+
+def create_user(username: str, password: str, role: str = "admin", created_by: str = "SYSTEM") -> bool:
+    """
+    Create a new user. Used by the bootstrap script.
+    """
+    # Check if user already exists
+    if sheets_db.find_rows("users", {"Username": username}):
+        st.warning(f"User '{username}' already exists.")
+        return False
+        
+    hashed_pw = hash_password(password)
+    
+    try:
+        sheets_db.insert_row("users", {
+            "Username": username,
+            "Password Hash": hashed_pw,
+            "Role": role,
+            "Active": "TRUE"
+        }, user_id=created_by)
+        return True
+    except Exception as e:
+        st.error(f"Failed to create user: {e}")
+        return False
