@@ -1,11 +1,15 @@
 # core/sheets_db.py
 from __future__ import annotations
 import json
+import threading
+import io
 from datetime import datetime
 from typing import Any, Optional
 import streamlit as st
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseUpload
+from googleapiclient.errors import HttpError
 
 SCHEMA: dict[str, list[str]] = {
     "users": ["User ID", "Username", "Password Hash", "Role", "Active", "Created At"],
@@ -14,7 +18,7 @@ SCHEMA: dict[str, list[str]] = {
     "item_master": ["Item ID", "Item Name", "Unit", "Default Price", "Active", "Created At"],
     "transporter_master": ["Transporter ID", "Name", "Contact", "Vehicle Count", "Active", "Created At"],
     "employee_master": ["Employee ID", "Name", "Role", "Contact", "Active", "Created At"],
-    "purchases": ["Purchase ID", "Month", "Year", "Date", "Invoice no", "Party ID", "Party name", "Item ID", "Item", "Moisture %", "Qty", "Unit", "price", "Amount", "CGST", "SGST", "IGST", "ROUND OFF", "Total amount", "Moisture Qty", "Actual Qty", "Employee ID", "Employee Name", "Transport Type", "Vehicle No", "Transporter ID", "Transporter Name", "Starting Km", "End Km", "Km covered", "Transportation Amount", "Other Charges", "Places Visited", "Created At"],
+    "purchases": ["Purchase ID", "Month", "Year", "Date", "Invoice no", "Party ID", "Party name", "Item ID", "Item", "Moisture %", "Qty", "Unit", "price", "Amount", "CGST", "SGST", "IGST", "ROUND OFF", "Total amount", "Moisture Qty", "Actual Qty", "Employee ID", "Employee Name", "Transport Type", "Vehicle No", "Transporter ID", "Transporter Name", "Starting Km", "End Km", "Km covered", "Transportation Amount", "Other Charges", "Places Visited", "Invoice Link", "Created At"],
     "purchase_items": ["Line ID", "Purchase ID", "Item ID", "Item", "Qty", "Unit", "price", "Amount", "Moisture %", "Moisture Qty", "Actual Qty", "CGST", "SGST", "IGST", "ROUND OFF", "Total amount"],
     "audit_log": ["Log ID", "Timestamp", "User ID", "Action", "Table", "Record ID", "Old Value", "New Value"],
     "config": ["Key", "Value", "Description", "Updated At"],
@@ -30,7 +34,7 @@ ID_SPEC: dict[str, tuple[str, str]] = {
 
 AUTO_COLUMNS = {"Created At", "Updated At", "Timestamp"}
 ID_COLUMNS = {col for _, col in ID_SPEC.values()}
-_SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
+_SCOPES = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
 
 def get_service():
     if "gcp_service_account" not in st.secrets:
@@ -47,7 +51,6 @@ def _get_sheet_id() -> str:
 def _get_sheet_data(tab: str) -> list[list[str]]:
     service = get_service()
     sheet_id = _get_sheet_id()
-    # Get all values from the tab
     result = service.spreadsheets().values().get(spreadsheetId=sheet_id, range=tab).execute()
     return result.get('values', [])
 
@@ -120,8 +123,6 @@ def insert_row(tab: str, data: dict[str, Any], user_id: Optional[str] = None, sk
     if tab in ID_SPEC: payload[ID_SPEC[tab][1]] = _next_id(tab)
     
     row = _dict_to_row(headers, payload)
-    
-    # Append row using Google API directly
     body = {'values': [row]}
     service.spreadsheets().values().append(
         spreadsheetId=sheet_id, range=tab,
@@ -166,7 +167,7 @@ def update_row(tab: str, record_id: str, patch: dict[str, Any], user_id: Optiona
         if i == 0: continue
         rec = _row_to_dict(headers, r)
         if rec.get(ID_SPEC[tab][1]) == record_id:
-            row_num = i + 1 # 1-based index
+            row_num = i + 1
             old_row = rec
             break
             
@@ -178,10 +179,9 @@ def update_row(tab: str, record_id: str, patch: dict[str, Any], user_id: Optiona
     new_row_dict = dict(old_row)
     new_row_dict.update(clean_patch)
     
-    # Update specific cells
     for k, v in clean_patch.items():
         col_idx = headers.index(k)
-        col_letter = chr(65 + col_idx) # A=65, B=66...
+        col_letter = chr(65 + col_idx)
         cell_range = f"{tab}!{col_letter}{row_num}"
         val = json.dumps(v) if isinstance(v, (dict, list)) else v
         body = {'values': [[val]]}
@@ -194,14 +194,68 @@ def update_row(tab: str, record_id: str, patch: dict[str, Any], user_id: Optiona
     return new_row_dict
 
 def delete_row(tab: str, record_id: str, user_id: Optional[str] = None, hard: bool = False) -> None:
-    if hard: raise NotImplementedError("Hard delete not supported in raw API yet.")
-    # Soft delete = update Active column to FALSE
-    update_row(tab, record_id, {"Active": "FALSE"}, user_id)
-    log_audit(user_id or "SYSTEM", "SOFT_DELETE", tab, record_id, None, None)
+    if hard:
+        service = get_service()
+        sheet_id = _get_sheet_id()
+        headers = get_worksheet_headers(tab)
+        data = _get_sheet_data(tab)
+        
+        row_num = None
+        for i, r in enumerate(data):
+            if i == 0: continue
+            rec = _row_to_dict(headers, r)
+            if rec.get(ID_SPEC[tab][1]) == record_id:
+                row_num = i 
+                break
+                
+        if row_num is not None:
+            # Find the sheet ID for the tab
+            spreadsheet = service.spreadsheets().get(spreadsheetId=sheet_id).execute()
+            sheet_gid = None
+            for s in spreadsheet['sheets']:
+                if s['properties']['title'] == tab:
+                    sheet_gid = s['properties']['sheetId']
+                    break
+            
+            if sheet_gid is not None:
+                body = {
+                    "requests": [{
+                        "deleteDimension": {
+                            "range": {
+                                "sheetId": sheet_gid,
+                                "dimension": "ROWS",
+                                "startIndex": row_num,
+                                "endIndex": row_num + 1
+                            }
+                        }
+                    }]
+                }
+                service.spreadsheets().batchUpdate(spreadsheetId=sheet_id, body=body).execute()
+                log_audit(user_id or "SYSTEM", "HARD_DELETE", tab, record_id, None, None)
+    else:
+        update_row(tab, record_id, {"Active": "FALSE"}, user_id)
+        log_audit(user_id or "SYSTEM", "SOFT_DELETE", tab, record_id, None, None)
 
 def healthcheck():
     try:
         ensure_headers()
-        return {"status": "ok", "message": "Raw Google API connected successfully!"}
+        return {"status": "ok", "message": "API connected successfully!"}
     except Exception as e:
         return {"status": "error", "message": str(e)}
+
+def upload_invoice_to_drive(file_bytes, filename, folder_id, mime_type="application/pdf"):
+    """
+    Uploads a file to a specific Google Drive folder and returns the web view link.
+    """
+    creds = Credentials.from_service_account_info(dict(st.secrets["gcp_service_account"]), scopes=_SCOPES)
+    service = build('drive', 'v3', credentials=creds, cache_discovery=False)
+    
+    file_metadata = {'name': filename, 'parents': [folder_id]}
+    media = MediaIoBaseUpload(io.BytesIO(file_bytes), mimetype=mime_type, resumable=True)
+    
+    try:
+        file = service.files().create(body=file_metadata, media_body=media, fields='id, webViewLink', supportsAllDrives=True).execute()
+        service.permissions().create(fileId=file.get('id'), body={'type': 'anyone', 'role': 'reader'}, supportsAllDrives=True).execute()
+        return file.get('webViewLink')
+    except HttpError as error:
+        raise RuntimeError(f"Drive upload failed: {error}")
