@@ -32,7 +32,6 @@ def add_new_row():
     df = st.session_state.purchase_grid
     if not df.empty:
         last_row = df.iloc[-1].to_dict()
-        # Reset numeric fields to 0.0
         last_row["Qty"] = 0.00
         last_row["Price"] = 0.00
         last_row["Moisture %"] = 0.00
@@ -52,65 +51,67 @@ def delete_last_row():
     if len(st.session_state.purchase_grid) > 1:
         st.session_state.purchase_grid = st.session_state.purchase_grid.iloc[:-1]
 
-with st.form("multi_item_purchase_form", clear_on_submit=True):
-    
-    # --- SECTION 1: INVOICE HEADER ---
-    st.subheader("1. Invoice Details")
-    c1, c2, c3, c4 = st.columns(4)
-    with c1: inv_date = st.date_input("Date", value=date.today())
-    with c2: inv_no = st.text_input("Invoice No *")
-    with c3: party_name = st.selectbox("Party Name *", list(parties.keys()))
-    with c4: 
-        farm_name = st.selectbox("Farm Name", ["None"] + list(farms.keys()))
-        farm_id = farms[farm_name]["Farm ID"] if farm_name != "None" else ""
+# --- SECTION 1: INVOICE HEADER (Outside Form) ---
+st.subheader("1. Invoice Details")
+c1, c2, c3, c4 = st.columns(4)
+with c1: inv_date = st.date_input("Date", value=date.today())
+with c2: inv_no = st.text_input("Invoice No *")
+with c3: party_name = st.selectbox("Party Name *", list(parties.keys()))
+with c4: 
+    farm_name = st.selectbox("Farm Name", ["None"] + list(farms.keys()))
+    farm_id = farms[farm_name]["Farm ID"] if farm_name != "None" else ""
 
-    c1, c2, c3, c4 = st.columns(4)
-    with c1: employee_name = st.selectbox("Employee Name *", list(employees.keys()) if employees else ["N/A"])
-    with c2: transport_type = st.selectbox("Transport Type", ["By Vehicle", "By Transporter", "Self Pickup"])
-    with c3: vehicle_no = st.text_input("Vehicle No")
-    with c4: transporter_name = st.selectbox("Transporter Name", ["None"] + list(transporters.keys()))
+c1, c2, c3, c4 = st.columns(4)
+with c1: employee_name = st.selectbox("Employee Name *", list(employees.keys()) if employees else ["N/A"])
+with c2: transport_type = st.selectbox("Transport Type", ["By Vehicle", "By Transporter", "Self Pickup"])
+with c3: vehicle_no = st.text_input("Vehicle No")
+with c4: transporter_name = st.selectbox("Transporter Name", ["None"] + list(transporters.keys()))
 
-    c1, c2, c3, c4 = st.columns(4)
-    with c1: places_visited = st.text_input("Places Visited")
-    with c2: start_km = st.number_input("Starting Km", min_value=0.0, step=1.0)
-    with c3: end_km = st.number_input("End Km", min_value=0.0, step=1.0)
-    with c4: km_covered = st.number_input("Km Covered", min_value=0.0, step=1.0, value=float(end_km - start_km) if end_km > start_km else 0.0)
+c1, c2, c3, c4 = st.columns(4)
+with c1: places_visited = st.text_input("Places Visited")
+with c2: start_km = st.number_input("Starting Km", min_value=0.0, step=1.0)
+with c3: end_km = st.number_input("End Km", min_value=0.0, step=1.0)
+with c4: km_covered = st.number_input("Km Covered", min_value=0.0, step=1.0, value=float(end_km - start_km) if end_km > start_km else 0.0)
 
-    c1, c2 = st.columns(2)
-    with c1: other_charges = st.number_input("Other Charges (₹)", min_value=0.0, step=1.0)
-    with c2: invoice_link = st.text_input("Invoice Link (Drive / OneDrive)")
+c1, c2 = st.columns(2)
+with c1: other_charges = st.number_input("Other Charges (₹)", min_value=0.0, step=1.0)
+with c2: invoice_link = st.text_input("Invoice Link (Drive / OneDrive)")
 
-    st.divider()
+st.divider()
 
-    # --- SECTION 2: MULTI-ITEM GRID ---
-    st.subheader("2. Line Items")
-    
-    col_add, col_remove, _ = st.columns([1, 1, 2])
-    with col_add:
-        st.button("➕ Add Row (Copy Previous Item)", on_click=add_new_row, use_container_width=True)
-    with col_remove:
-        st.button("➖ Remove Last Row", on_click=delete_last_row, use_container_width=True)
+# --- SECTION 2: MULTI-ITEM GRID ---
+st.subheader("2. Line Items")
 
-    edited_df = st.data_editor(
-        st.session_state.purchase_grid,
-        use_container_width=True,
-        hide_index=True,
-        column_config={
-            "Item": st.column_config.SelectboxColumn("Item", options=list(items.keys()), required=True),
-            "Qty": st.column_config.NumberColumn("Qty", min_value=0.1, step=1.0, format="%.2f", required=True),
-            "Moisture %": st.column_config.NumberColumn("Moisture %", min_value=0.0, max_value=100.0, step=0.1, format="%.2f"),
-            "Price": st.column_config.NumberColumn("Price (₹)", min_value=0.0, step=0.01, format="%.2f", required=True),
-            "CGST %": st.column_config.NumberColumn("CGST %", min_value=0.0, step=0.1, format="%.2f"),
-            "SGST %": st.column_config.NumberColumn("SGST %", min_value=0.0, step=0.1, format="%.2f"),
-            "IGST %": st.column_config.NumberColumn("IGST %", min_value=0.0, step=0.1, format="%.2f"),
-            "Transport Amt": st.column_config.NumberColumn("Transport Amt (₹)", min_value=0.0, step=1.0, format="%.2f"),
-        }
-    )
-    
-    st.session_state.purchase_grid = edited_df
+# Buttons MUST be outside the form
+col_add, col_remove, _ = st.columns([1, 1, 2])
+with col_add:
+    st.button("➕ Add Row (Copy Previous Item)", on_click=add_new_row, use_container_width=True)
+with col_remove:
+    st.button("➖ Remove Last Row", on_click=delete_last_row, use_container_width=True)
 
-    st.write("")
-    submitted = st.form_submit_button("💾 Calculate & Save Invoice", use_container_width=True, type="primary")
+# The Data Editor (Outside the form so it updates live)
+edited_df = st.data_editor(
+    st.session_state.purchase_grid,
+    use_container_width=True,
+    hide_index=True,
+    column_config={
+        "Item": st.column_config.SelectboxColumn("Item", options=list(items.keys()), required=True),
+        "Qty": st.column_config.NumberColumn("Qty", min_value=0.1, step=1.0, format="%.2f", required=True),
+        "Moisture %": st.column_config.NumberColumn("Moisture %", min_value=0.0, max_value=100.0, step=0.1, format="%.2f"),
+        "Price": st.column_config.NumberColumn("Price (₹)", min_value=0.0, step=0.01, format="%.2f", required=True),
+        "CGST %": st.column_config.NumberColumn("CGST %", min_value=0.0, step=0.1, format="%.2f"),
+        "SGST %": st.column_config.NumberColumn("SGST %", min_value=0.0, step=0.1, format="%.2f"),
+        "IGST %": st.column_config.NumberColumn("IGST %", min_value=0.0, step=0.1, format="%.2f"),
+        "Transport Amt": st.column_config.NumberColumn("Transport Amt (₹)", min_value=0.0, step=1.0, format="%.2f"),
+    }
+)
+
+# Update the session state with any edits
+st.session_state.purchase_grid = edited_df
+
+st.write("")
+# We put the final submit button outside the form, but wrap the logic in a check
+submitted = st.button("💾 Calculate & Save Invoice", use_container_width=True, type="primary")
 
 # --- PROCESSING LOGIC ---
 if submitted:
