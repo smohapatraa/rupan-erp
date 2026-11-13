@@ -1,186 +1,261 @@
-"""Google Sheets as database — complete wrapper with insert_row returning saved record."""
+# core/sheets_db.py
+from __future__ import annotations
+import json
+import threading
+import io
+from datetime import datetime
+from typing import Any, Optional
 import streamlit as st
-import gspread
-import pandas as pd
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
-from gspread.exceptions import APIError
-from datetime import datetime
-import io
+from googleapiclient.errors import HttpError
 
-SCOPES = [
-    "https://www.googleapis.com/auth/spreadsheets",
-    "https://www.googleapis.com/auth/drive",
-]
+SCHEMA: dict[str, list[str]] = {
+    "users": ["User ID", "Username", "Password Hash", "Role", "Active", "Created At"],
+    "farm_master": ["Farm ID", "Farm Name", "Location", "Owner", "Contact", "Active", "Created At"],
+    "party_master": ["Party ID", "Party Name", "Contact", "Address", "GSTIN", "Active", "Created At"],
+    "item_master": ["Item ID", "Item Name", "Unit", "Default Price", "Active", "Created At"],
+    "transporter_master": ["Transporter ID", "Name", "Contact", "Vehicle Count", "Active", "Created At"],
+    "employee_master": ["Employee ID", "Name", "Role", "Contact", "Active", "Created At"],
+    "purchases": ["Purchase ID", "Month", "Year", "Date", "Invoice no", "Party ID", "Party name", "Item ID", "Item", "Moisture %", "Qty", "Unit", "price", "Amount", "CGST", "SGST", "IGST", "ROUND OFF", "Total amount", "Moisture Qty", "Actual Qty", "Employee ID", "Employee Name", "Transport Type", "Vehicle No", "Transporter ID", "Transporter Name", "Starting Km", "End Km", "Km covered", "Transportation Amount", "Other Charges", "Places Visited", "Invoice Link", "Created At"],
+    "purchase_items": ["Line ID", "Purchase ID", "Item ID", "Item", "Qty", "Unit", "price", "Amount", "Moisture %", "Moisture Qty", "Actual Qty", "CGST", "SGST", "IGST", "ROUND OFF", "Total amount"],
+    "audit_log": ["Log ID", "Timestamp", "User ID", "Action", "Table", "Record ID", "Old Value", "New Value"],
+    "config": ["Key", "Value", "Description", "Updated At"],
+    "state_master": ["State ID", "State Name", "State Code", "Active"],
+}
 
-class ConcurrentEditError(Exception):
-    pass
+ID_SPEC: dict[str, tuple[str, str]] = {
+    "users": ("USR", "User ID"), "farm_master": ("FRM", "Farm ID"), "party_master": ("PTY", "Party ID"),
+    "item_master": ("ITM", "Item ID"), "transporter_master": ("TRN", "Transporter ID"),
+    "employee_master": ("EMP", "Employee ID"), "purchases": ("PUR", "Purchase ID"),
+    "purchase_items": ("PIT", "Line ID"), "audit_log": ("LOG", "Log ID"), "state_master": ("STM", "State ID"),
+}
 
+AUTO_COLUMNS = {"Created At", "Updated At", "Timestamp"}
+ID_COLUMNS = {col for _, col in ID_SPEC.values()}
+_SCOPES = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
 
-@st.cache_resource
-def get_client():
-    creds = Credentials.from_service_account_info(
-        dict(st.secrets["gcp_service_account"]), scopes=SCOPES
-    )
-    return gspread.authorize(creds)
+def get_service():
+    if "gcp_service_account" not in st.secrets:
+        raise RuntimeError("gcp_service_account missing in Streamlit Secrets!")
+    info = dict(st.secrets["gcp_service_account"])
+    creds = Credentials.from_service_account_info(info, scopes=_SCOPES)
+    return build('sheets', 'v4', credentials=creds, cache_discovery=False)
 
+def _get_sheet_id() -> str:
+    sid = st.secrets.get("sheet_id")
+    if not sid: raise RuntimeError("sheet_id missing in Secrets!")
+    return sid
 
-@st.cache_resource
-def get_spreadsheet():
-    return get_client().open_by_key(st.secrets["google"]["sheet_id"])
+def _get_sheet_data(tab: str) -> list[list[str]]:
+    service = get_service()
+    sheet_id = _get_sheet_id()
+    result = service.spreadsheets().values().get(spreadsheetId=sheet_id, range=tab).execute()
+    return result.get('values', [])
 
+def get_worksheet_headers(tab: str) -> list[str]:
+    data = _get_sheet_data(tab)
+    return data[0] if data else []
 
-@st.cache_resource
-def get_drive():
-    creds = Credentials.from_service_account_info(
-        dict(st.secrets["gcp_service_account"]), scopes=SCOPES
-    )
-    return build("drive", "v3", credentials=creds, cache_discovery=False)
+def ensure_headers(tab: Optional[str] = None) -> None:
+    tabs = [tab] if tab else list(SCHEMA)
+    for t in tabs:
+        actual = get_worksheet_headers(t)
+        if actual != SCHEMA[t]:
+            raise RuntimeError(f"[{t}] Header mismatch. Expected {SCHEMA[t]}, got {actual}")
 
+def _row_to_dict(headers, row):
+    padded = list(row) + [""] * (len(headers) - len(row))
+    return dict(zip(headers, padded[: len(headers)]))
 
-def get_worksheet(tab_name: str):
-    return get_spreadsheet().worksheet(tab_name)
+def _dict_to_row(headers, data):
+    out = []
+    for h in headers:
+        v = data.get(h, "")
+        if isinstance(v, (dict, list)): v = json.dumps(v, ensure_ascii=False)
+        out.append(v if v is not None else "")
+    return out
 
+def now_iso(): return datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
 
-# ---------- READ ----------
+def find_rows(tab: str, filters: Optional[dict] = None) -> list[dict[str, Any]]:
+    data = _get_sheet_data(tab)
+    if not data: return []
+    headers = data[0]
+    rows = data[1:]
+    out = []
+    for r in rows:
+        if not any(r): continue
+        rec = _row_to_dict(headers, r)
+        if filters and not all(str(rec.get(k, "")) == str(v) for k, v in filters.items()):
+            continue
+        out.append(rec)
+    return out
 
-@retry(
-    stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, min=1, max=5),
-    retry=retry_if_exception_type(APIError),
-)
-def read_table(tab_name: str) -> pd.DataFrame:
-    ws = get_worksheet(tab_name)
-    data = ws.get_all_records()
-    return pd.DataFrame(data)
-
-
-def list_all(tab_name: str, only_active: bool = False) -> list:
-    """Return list of dicts for all rows. Optionally filter to Active=TRUE."""
-    df = read_table(tab_name)
-    if df.empty:
-        return []
-    rows = df.to_dict(orient="records")
-    if only_active:
-        # Check for Active or Active? column
-        for col in ("Active", "active", "Is Active", "is_active"):
-            if col in df.columns:
-                rows = [
-                    r for r in rows
-                    if str(r.get(col, "")).upper() in ("TRUE", "1", "YES", "Y")
-                ]
-                break
+def list_all(tab: str, only_active: bool = False) -> list[dict[str, Any]]:
+    rows = find_rows(tab)
+    if only_active and rows and "Active" in rows[0]:
+        rows = [r for r in rows if str(r.get("Active", "TRUE")).upper() != "FALSE"]
     return rows
 
+def _next_id(tab: str) -> str:
+    prefix, col_name = ID_SPEC[tab]
+    rows = find_rows(tab)
+    max_n = 0
+    for r in rows:
+        v = r.get(col_name, "")
+        if v and "-" in v:
+            try:
+                n = int(v.split("-")[1])
+                if n > max_n: max_n = n
+            except: pass
+    return f"{prefix}-{max_n + 1:04d}"
 
-# ---------- WRITE ----------
-
-@retry(
-    stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, min=1, max=5),
-    retry=retry_if_exception_type(APIError),
-)
-def append_row(tab_name: str, row_dict: dict) -> None:
-    ws = get_worksheet(tab_name)
-    headers = ws.row_values(1)
-    row = [row_dict.get(h, "") for h in headers]
-    ws.append_row(row, value_input_option="RAW")
-
-
-@retry(
-    stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, min=1, max=5),
-    retry=retry_if_exception_type(APIError),
-)
-def get_next_id(tab_name: str, id_col: str) -> int:
-    df = read_table(tab_name)
-    if df.empty or id_col not in df.columns:
-        return 1
-    try:
-        return int(pd.to_numeric(df[id_col], errors="coerce").max()) + 1
-    except Exception:
-        return 1
-
-
-def insert_row(tab_name: str, data: dict, user_id=None) -> dict:
-    """
-    Insert a row and RETURN the saved record (with generated ID).
-    This is the fix for the NoneType error.
-    """
-    ws = get_worksheet(tab_name)
-    headers = ws.row_values(1)
-
-    # 1. Generate ID for the first column
-    id_col = headers[0]
-    next_id = get_next_id(tab_name, id_col)
-    data[id_col] = next_id
-
-    # 2. Stamp audit fields if they exist
-    now = datetime.now().isoformat(timespec="seconds")
-    if "entered_by" in headers and user_id and not data.get("entered_by"):
-        data["entered_by"] = user_id
-    if "entered_on" in headers and not data.get("entered_on"):
-        data["entered_on"] = now
-    if "last_modified" in headers:
-        data["last_modified"] = now
-
-    # 3. Build row in exact header order
-    row = [data.get(h, "") for h in headers]
-    ws.append_row(row, value_input_option="RAW")
-
-    # 4. Return the saved record — FIX for saved_purchase["Purchase ID"]
-    return data
-
-
-@retry(
-    stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, min=1, max=5),
-    retry=retry_if_exception_type(APIError),
-)
-def update_row(tab_name: str, key_col: str, key_val, updates: dict) -> None:
-    ws = get_worksheet(tab_name)
-    headers = ws.row_values(1)
-    if key_col not in headers:
-        raise ValueError(f"{key_col} not in {tab_name}")
-    key_idx = headers.index(key_col) + 1
-    all_rows = ws.get_all_values()
-    target_row = None
-    for i, row in enumerate(all_rows[1:], start=2):
-        if row[key_idx - 1] == str(key_val):
-            target_row = i
-            break
-    if not target_row:
-        raise ValueError(f"{key_col}={key_val} not found in {tab_name}")
-
-    updates["last_modified"] = datetime.now().isoformat(timespec="seconds")
-
-    cells = []
-    for col_name, val in updates.items():
-        if col_name in headers:
-            col_idx = headers.index(col_name) + 1
-            cells.append(gspread.Cell(target_row, col_idx, val))
-    if cells:
-        ws.update_cells(cells, value_input_option="RAW")
-
-
-# ---------- GOOGLE DRIVE ----------
-
-def upload_invoice_to_drive(file_bytes: bytes, filename: str, folder_id: str,
-                             mime_type: str = "application/pdf") -> str:
-    """Upload file to Drive, return the view link (string)."""
-    drive = get_drive()
-    media = MediaIoBaseUpload(io.BytesIO(file_bytes), mimetype=mime_type, resumable=False)
-    file_meta = {"name": filename, "parents": [folder_id]}
-    created = drive.files().create(
-        body=file_meta,
-        media_body=media,
-        fields="id, webViewLink",
-        supportsAllDrives=True,
+def insert_row(tab: str, data: dict[str, Any], user_id: Optional[str] = None, skip_audit: bool = False) -> dict[str, Any]:
+    service = get_service()
+    sheet_id = _get_sheet_id()
+    headers = get_worksheet_headers(tab)
+    
+    payload = {k: v for k, v in data.items() if k not in AUTO_COLUMNS and k not in ID_COLUMNS}
+    for col in headers:
+        if col in AUTO_COLUMNS: payload[col] = now_iso()
+    if tab in ID_SPEC: payload[ID_SPEC[tab][1]] = _next_id(tab)
+    
+    row = _dict_to_row(headers, payload)
+    body = {'values': [row]}
+    service.spreadsheets().values().append(
+        spreadsheetId=sheet_id, range=tab,
+        valueInputOption="USER_ENTERED", body=body
     ).execute()
-    return created.get("webViewLink", "")
+    
+    inserted = _row_to_dict(headers, row)
+    if not skip_audit and tab != "audit_log":
+        log_audit(user_id or "SYSTEM", "INSERT", tab, _record_id_of(tab, inserted), None, inserted)
+    return inserted
 
+def _record_id_of(tab: str, rec: dict[str, Any]) -> str:
+    if tab in ID_SPEC: return str(rec.get(ID_SPEC[tab][1], ""))
+    if tab == "config": return str(rec.get("Key", ""))
+    return ""
 
-def clear_cache():
-    st.cache_data.clear()
+def log_audit(user_id: str, action: str, table: str, record_id: str, old: Optional[dict], new: Optional[dict]):
+    try:
+        payload = {
+            "Timestamp": now_iso(), "User ID": user_id, "Action": action, "Table": table, "Record ID": record_id,
+            "Old Value": "" if old is None else json.dumps(old, ensure_ascii=False),
+            "New Value": "" if new is None else json.dumps(new, ensure_ascii=False),
+        }
+        insert_row("audit_log", payload, user_id=user_id, skip_audit=True)
+    except Exception:
+        pass
+
+def get_row(tab: str, record_id: str) -> Optional[dict[str, Any]]:
+    if tab not in ID_SPEC: return None
+    _, id_col = ID_SPEC[tab]
+    matches = find_rows(tab, {id_col: record_id})
+    return matches[0] if matches else None
+
+def update_row(tab: str, record_id: str, patch: dict[str, Any], user_id: Optional[str] = None) -> dict[str, Any]:
+    service = get_service()
+    sheet_id = _get_sheet_id()
+    headers = get_worksheet_headers(tab)
+    data = _get_sheet_data(tab)
+    
+    row_num = None
+    for i, r in enumerate(data):
+        if i == 0: continue
+        rec = _row_to_dict(headers, r)
+        if rec.get(ID_SPEC[tab][1]) == record_id:
+            row_num = i + 1
+            old_row = rec
+            break
+            
+    if not row_num: raise KeyError(f"Record {record_id} not found.")
+    
+    clean_patch = {k: v for k, v in patch.items() if k in headers and k not in ID_COLUMNS}
+    if "Updated At" in headers: clean_patch["Updated At"] = now_iso()
+    
+    new_row_dict = dict(old_row)
+    new_row_dict.update(clean_patch)
+    
+    for k, v in clean_patch.items():
+        col_idx = headers.index(k)
+        col_letter = chr(65 + col_idx)
+        cell_range = f"{tab}!{col_letter}{row_num}"
+        val = json.dumps(v) if isinstance(v, (dict, list)) else v
+        body = {'values': [[val]]}
+        service.spreadsheets().values().update(
+            spreadsheetId=sheet_id, range=cell_range,
+            valueInputOption="USER_ENTERED", body=body
+        ).execute()
+        
+    log_audit(user_id or "SYSTEM", "UPDATE", tab, record_id, old_row, new_row_dict)
+    return new_row_dict
+
+def delete_row(tab: str, record_id: str, user_id: Optional[str] = None, hard: bool = False) -> None:
+    if hard:
+        service = get_service()
+        sheet_id = _get_sheet_id()
+        headers = get_worksheet_headers(tab)
+        data = _get_sheet_data(tab)
+        
+        row_num = None
+        for i, r in enumerate(data):
+            if i == 0: continue
+            rec = _row_to_dict(headers, r)
+            if rec.get(ID_SPEC[tab][1]) == record_id:
+                row_num = i 
+                break
+                
+        if row_num is not None:
+            # Find the sheet ID for the tab
+            spreadsheet = service.spreadsheets().get(spreadsheetId=sheet_id).execute()
+            sheet_gid = None
+            for s in spreadsheet['sheets']:
+                if s['properties']['title'] == tab:
+                    sheet_gid = s['properties']['sheetId']
+                    break
+            
+            if sheet_gid is not None:
+                body = {
+                    "requests": [{
+                        "deleteDimension": {
+                            "range": {
+                                "sheetId": sheet_gid,
+                                "dimension": "ROWS",
+                                "startIndex": row_num,
+                                "endIndex": row_num + 1
+                            }
+                        }
+                    }]
+                }
+                service.spreadsheets().batchUpdate(spreadsheetId=sheet_id, body=body).execute()
+                log_audit(user_id or "SYSTEM", "HARD_DELETE", tab, record_id, None, None)
+    else:
+        update_row(tab, record_id, {"Active": "FALSE"}, user_id)
+        log_audit(user_id or "SYSTEM", "SOFT_DELETE", tab, record_id, None, None)
+
+def healthcheck():
+    try:
+        ensure_headers()
+        return {"status": "ok", "message": "API connected successfully!"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+def upload_invoice_to_drive(file_bytes, filename, folder_id, mime_type="application/pdf"):
+    """
+    Uploads a file to a specific Google Drive folder and returns the web view link.
+    """
+    creds = Credentials.from_service_account_info(dict(st.secrets["gcp_service_account"]), scopes=_SCOPES)
+    service = build('drive', 'v3', credentials=creds, cache_discovery=False)
+    
+    file_metadata = {'name': filename, 'parents': [folder_id]}
+    media = MediaIoBaseUpload(io.BytesIO(file_bytes), mimetype=mime_type, resumable=True)
+    
+    try:
+        file = service.files().create(body=file_metadata, media_body=media, fields='id, webViewLink', supportsAllDrives=True).execute()
+        service.permissions().create(fileId=file.get('id'), body={'type': 'anyone', 'role': 'reader'}, supportsAllDrives=True).execute()
+        return file.get('webViewLink')
+    except HttpError as error:
+        raise RuntimeError(f"Drive upload failed: {error}")
