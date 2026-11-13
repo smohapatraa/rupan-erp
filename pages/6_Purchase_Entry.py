@@ -68,8 +68,8 @@ with st.form("purchase_form", clear_on_submit=True):
     with c2: igst_pct = st.number_input("IGST %", min_value=0.0, step=0.1)
     
     st.divider()
-    # --- UPLOAD INVOICE ---
-    uploaded_file = st.file_uploader("Upload Invoice (PDF/Image)", type=["pdf", "jpg", "jpeg", "png"])
+    # --- INVOICE LINK (No Drive Upload) ---
+    invoice_link = st.text_input("Invoice Link (Paste Google Drive / OneDrive link here)")
     
     st.write("")
     submitted = st.form_submit_button("💾 Calculate & Save Purchase", use_container_width=True, type="primary")
@@ -80,36 +80,25 @@ if submitted:
         st.error("Invoice Number is required.")
         st.stop()
         
-    # --- Math ---
+    # --- Math (Gross Amount Calculation) ---
     moisture_qty = qty * (moisture_pct / 100.0)
     actual_qty = qty - moisture_qty
-    amount = actual_qty * price
+    
+    # Amount is calculated on the GROSS Qty (not deducted)
+    amount = qty * price
+    
+    # GST Calculation
     cgst_amt = amount * (cgst_pct / 100.0)
     sgst_amt = amount * (sgst_pct / 100.0)
     igst_amt = amount * (igst_pct / 100.0)
+    
+    # Gross Total
     gross_total = amount + cgst_amt + sgst_amt + igst_amt + transport_amt + other_charges
     rounded_total = round(gross_total)
     round_off_diff = rounded_total - gross_total
     
     st.success(f"Calculated Total: ₹ {rounded_total:,.2f}")
-    
-    # --- Upload File to Drive ---
-    invoice_link = ""
-    if uploaded_file is not None:
-        with st.spinner("Uploading invoice to Google Drive..."):
-            try:
-                folder_id = st.secrets.get("invoice_folder_id")
-                if not folder_id:
-                    st.error("Missing 'invoice_folder_id' in Streamlit Secrets. Skipping upload.")
-                else:
-                    file_bytes = uploaded_file.read()
-                    filename = f"{inv_no}_{party_name}_{inv_date}.{uploaded_file.name.split('.')[-1]}"
-                    invoice_link = sheets_db.upload_invoice_to_drive(
-                        file_bytes=file_bytes, filename=filename, folder_id=folder_id, mime_type=uploaded_file.type
-                    )
-                    st.info("Invoice uploaded to Drive!")
-            except Exception as e:
-                st.error(f"Drive upload failed: {e}")
+    st.info(f"Moisture Qty: {moisture_qty:.2f} | Actual Qty: {actual_qty:.2f} | Base Amount (Gross): ₹ {amount:,.2f}")
 
     # --- Save to Sheets ---
     with st.spinner("Saving to Database..."):
