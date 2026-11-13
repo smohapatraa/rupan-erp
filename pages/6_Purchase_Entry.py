@@ -21,7 +21,6 @@ if not parties or not items:
     st.error("You must add at least one Party and one Item in the Master tables.")
     st.stop()
 
-# Use a form to prevent page refreshes on every cell edit
 with st.form("multi_item_purchase_form", clear_on_submit=True):
     
     # --- SECTION 1: INVOICE HEADER ---
@@ -61,7 +60,6 @@ with st.form("multi_item_purchase_form", clear_on_submit=True):
         {"Item": list(items.keys())[0], "Qty": 1.00, "Moisture %": 0.00, "Price": 0.00, "CGST %": 0.00, "SGST %": 0.00, "IGST %": 0.00, "Transport Amt": 0.00}
     ])
 
-    # Use dynamic rows inside the form. This is FAST and allows adding rows.
     edited_df = st.data_editor(
         default_data,
         num_rows="dynamic",
@@ -91,10 +89,32 @@ if submitted:
         st.error("Please add at least one item.")
         st.stop()
 
-    # Auto-fill empty rows (for when user clicks '+' but doesn't type an Item)
-    # We fill the Item with the first available item so the app doesn't crash
+    # --- THE MAGIC FIX: Auto-fill the empty row that '+' creates ---
+    # 1. Fill the Item name if it's blank
     edited_df["Item"] = edited_df["Item"].fillna(list(items.keys())[0])
     
+    # 2. If a row has NaN in Qty, it means the user just clicked '+' and hasn't typed yet.
+    # We will copy the taxes and transport from the row above it.
+    for i in range(1, len(edited_df)):
+        if pd.isna(edited_df.at[i, "Qty"]):
+            # Copy the Item and Tax/Transport values from the previous row
+            edited_df.at[i, "Item"] = edited_df.at[i-1, "Item"]
+            edited_df.at[i, "CGST %"] = edited_df.at[i-1, "CGST %"]
+            edited_df.at[i, "SGST %"] = edited_df.at[i-1, "SGST %"]
+            edited_df.at[i, "IGST %"] = edited_df.at[i-1, "IGST %"]
+            edited_df.at[i, "Transport Amt"] = edited_df.at[i-1, "Transport Amt"]
+            # Set the numeric values to 0
+            edited_df.at[i, "Qty"] = 0.00
+            edited_df.at[i, "Price"] = 0.00
+            edited_df.at[i, "Moisture %"] = 0.00
+
+    # Remove completely empty rows (where Qty is 0)
+    edited_df = edited_df[edited_df["Qty"] > 0]
+    
+    if edited_df.empty:
+        st.error("Please enter a Quantity greater than 0 for at least one item.")
+        st.stop()
+
     total_base_amount = 0.0
     total_cgst = 0.0
     total_sgst = 0.0
@@ -109,10 +129,6 @@ if submitted:
     
     try:
         for index, row in edited_df.iterrows():
-            # Skip rows that are completely empty (if user added a row and didn't use it)
-            if pd.isna(row["Qty"]) or row["Qty"] == 0:
-                continue
-                
             item_name = row["Item"]
             qty = float(row["Qty"])
             moisture_pct = float(row["Moisture %"]) if not pd.isna(row["Moisture %"]) else 0.0
@@ -157,10 +173,6 @@ if submitted:
                 "IGST": igst_amt,
                 "Total amount": row_total
             })
-
-        if not line_items_to_save:
-            st.error("Please add at least one item with a valid quantity.")
-            st.stop()
 
         gross_total = total_base_amount + total_cgst + total_sgst + total_igst + total_transport + other_charges
         rounded_total = round(gross_total)
