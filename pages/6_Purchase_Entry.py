@@ -83,7 +83,7 @@ if submitted:
     # --- Math ---
     moisture_qty = qty * (moisture_pct / 100.0)
     actual_qty = qty - moisture_qty
-    amount = actual_qty * price
+    amount = qty * price
     cgst_amt = amount * (cgst_pct / 100.0)
     sgst_amt = amount * (sgst_pct / 100.0)
     igst_amt = amount * (igst_pct / 100.0)
