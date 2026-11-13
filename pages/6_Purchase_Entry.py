@@ -21,97 +21,65 @@ if not parties or not items:
     st.error("You must add at least one Party and one Item in the Master tables.")
     st.stop()
 
-# Initialize session state for the grid if it doesn't exist
-if "purchase_grid" not in st.session_state:
-    st.session_state.purchase_grid = pd.DataFrame([
+# Use a form to prevent page refreshes on every cell edit
+with st.form("multi_item_purchase_form", clear_on_submit=True):
+    
+    # --- SECTION 1: INVOICE HEADER ---
+    st.subheader("1. Invoice Details")
+    c1, c2, c3, c4 = st.columns(4)
+    with c1: inv_date = st.date_input("Date", value=date.today())
+    with c2: inv_no = st.text_input("Invoice No *")
+    with c3: party_name = st.selectbox("Party Name *", list(parties.keys()))
+    with c4: 
+        farm_name = st.selectbox("Farm Name", ["None"] + list(farms.keys()))
+        farm_id = farms[farm_name]["Farm ID"] if farm_name != "None" else ""
+
+    c1, c2, c3, c4 = st.columns(4)
+    with c1: employee_name = st.selectbox("Employee Name *", list(employees.keys()) if employees else ["N/A"])
+    with c2: transport_type = st.selectbox("Transport Type", ["By Vehicle", "By Transporter", "Self Pickup"])
+    with c3: vehicle_no = st.text_input("Vehicle No")
+    with c4: transporter_name = st.selectbox("Transporter Name", ["None"] + list(transporters.keys()))
+
+    c1, c2, c3, c4 = st.columns(4)
+    with c1: places_visited = st.text_input("Places Visited")
+    with c2: start_km = st.number_input("Starting Km", min_value=0.0, step=1.0)
+    with c3: end_km = st.number_input("End Km", min_value=0.0, step=1.0)
+    with c4: km_covered = st.number_input("Km Covered", min_value=0.0, step=1.0, value=float(end_km - start_km) if end_km > start_km else 0.0)
+
+    c1, c2 = st.columns(2)
+    with c1: other_charges = st.number_input("Other Charges (₹)", min_value=0.0, step=1.0)
+    with c2: invoice_link = st.text_input("Invoice Link (Drive / OneDrive)")
+
+    st.divider()
+
+    # --- SECTION 2: MULTI-ITEM GRID ---
+    st.subheader("2. Line Items")
+    st.write("Click the '+' at the bottom of the table to add a new row.")
+    
+    # Create the default first row
+    default_data = pd.DataFrame([
         {"Item": list(items.keys())[0], "Qty": 1.00, "Moisture %": 0.00, "Price": 0.00, "CGST %": 0.00, "SGST %": 0.00, "IGST %": 0.00, "Transport Amt": 0.00}
     ])
 
-def add_new_row():
-    """Copies the last row's Item, but resets numbers to 0.0."""
-    df = st.session_state.purchase_grid
-    if not df.empty:
-        last_row = df.iloc[-1].to_dict()
-        last_row["Qty"] = 0.00
-        last_row["Price"] = 0.00
-        last_row["Moisture %"] = 0.00
-        last_row["CGST %"] = 0.00
-        last_row["SGST %"] = 0.00
-        last_row["IGST %"] = 0.00
-        last_row["Transport Amt"] = 0.00
-        
-        st.session_state.purchase_grid = pd.concat([df, pd.DataFrame([last_row])], ignore_index=True)
-    else:
-        st.session_state.purchase_grid = pd.DataFrame([
-            {"Item": list(items.keys())[0], "Qty": 1.00, "Moisture %": 0.00, "Price": 0.00, "CGST %": 0.00, "SGST %": 0.00, "IGST %": 0.00, "Transport Amt": 0.00}
-        ])
+    # Use dynamic rows inside the form. This is FAST and allows adding rows.
+    edited_df = st.data_editor(
+        default_data,
+        num_rows="dynamic",
+        use_container_width=True,
+        column_config={
+            "Item": st.column_config.SelectboxColumn("Item", options=list(items.keys()), required=True),
+            "Qty": st.column_config.NumberColumn("Qty", min_value=0.1, step=1.0, format="%.2f", required=True),
+            "Moisture %": st.column_config.NumberColumn("Moisture %", min_value=0.0, max_value=100.0, step=0.1, format="%.2f"),
+            "Price": st.column_config.NumberColumn("Price (₹)", min_value=0.0, step=0.01, format="%.2f", required=True),
+            "CGST %": st.column_config.NumberColumn("CGST %", min_value=0.0, step=0.1, format="%.2f"),
+            "SGST %": st.column_config.NumberColumn("SGST %", min_value=0.0, step=0.1, format="%.2f"),
+            "IGST %": st.column_config.NumberColumn("IGST %", min_value=0.0, step=0.1, format="%.2f"),
+            "Transport Amt": st.column_config.NumberColumn("Transport Amt (₹)", min_value=0.0, step=1.0, format="%.2f"),
+        }
+    )
 
-def delete_last_row():
-    """Removes the last row."""
-    if len(st.session_state.purchase_grid) > 1:
-        st.session_state.purchase_grid = st.session_state.purchase_grid.iloc[:-1]
-
-# --- SECTION 1: INVOICE HEADER (Outside Form) ---
-st.subheader("1. Invoice Details")
-c1, c2, c3, c4 = st.columns(4)
-with c1: inv_date = st.date_input("Date", value=date.today())
-with c2: inv_no = st.text_input("Invoice No *")
-with c3: party_name = st.selectbox("Party Name *", list(parties.keys()))
-with c4: 
-    farm_name = st.selectbox("Farm Name", ["None"] + list(farms.keys()))
-    farm_id = farms[farm_name]["Farm ID"] if farm_name != "None" else ""
-
-c1, c2, c3, c4 = st.columns(4)
-with c1: employee_name = st.selectbox("Employee Name *", list(employees.keys()) if employees else ["N/A"])
-with c2: transport_type = st.selectbox("Transport Type", ["By Vehicle", "By Transporter", "Self Pickup"])
-with c3: vehicle_no = st.text_input("Vehicle No")
-with c4: transporter_name = st.selectbox("Transporter Name", ["None"] + list(transporters.keys()))
-
-c1, c2, c3, c4 = st.columns(4)
-with c1: places_visited = st.text_input("Places Visited")
-with c2: start_km = st.number_input("Starting Km", min_value=0.0, step=1.0)
-with c3: end_km = st.number_input("End Km", min_value=0.0, step=1.0)
-with c4: km_covered = st.number_input("Km Covered", min_value=0.0, step=1.0, value=float(end_km - start_km) if end_km > start_km else 0.0)
-
-c1, c2 = st.columns(2)
-with c1: other_charges = st.number_input("Other Charges (₹)", min_value=0.0, step=1.0)
-with c2: invoice_link = st.text_input("Invoice Link (Drive / OneDrive)")
-
-st.divider()
-
-# --- SECTION 2: MULTI-ITEM GRID ---
-st.subheader("2. Line Items")
-
-# Buttons MUST be outside the form
-col_add, col_remove, _ = st.columns([1, 1, 2])
-with col_add:
-    st.button("➕ Add Row (Copy Previous Item)", on_click=add_new_row, use_container_width=True)
-with col_remove:
-    st.button("➖ Remove Last Row", on_click=delete_last_row, use_container_width=True)
-
-# The Data Editor (Outside the form so it updates live)
-edited_df = st.data_editor(
-    st.session_state.purchase_grid,
-    use_container_width=True,
-    hide_index=True,
-    column_config={
-        "Item": st.column_config.SelectboxColumn("Item", options=list(items.keys()), required=True),
-        "Qty": st.column_config.NumberColumn("Qty", min_value=0.1, step=1.0, format="%.2f", required=True),
-        "Moisture %": st.column_config.NumberColumn("Moisture %", min_value=0.0, max_value=100.0, step=0.1, format="%.2f"),
-        "Price": st.column_config.NumberColumn("Price (₹)", min_value=0.0, step=0.01, format="%.2f", required=True),
-        "CGST %": st.column_config.NumberColumn("CGST %", min_value=0.0, step=0.1, format="%.2f"),
-        "SGST %": st.column_config.NumberColumn("SGST %", min_value=0.0, step=0.1, format="%.2f"),
-        "IGST %": st.column_config.NumberColumn("IGST %", min_value=0.0, step=0.1, format="%.2f"),
-        "Transport Amt": st.column_config.NumberColumn("Transport Amt (₹)", min_value=0.0, step=1.0, format="%.2f"),
-    }
-)
-
-# Update the session state with any edits
-st.session_state.purchase_grid = edited_df
-
-st.write("")
-# We put the final submit button outside the form, but wrap the logic in a check
-submitted = st.button("💾 Calculate & Save Invoice", use_container_width=True, type="primary")
+    st.write("")
+    submitted = st.form_submit_button("💾 Calculate & Save Invoice", use_container_width=True, type="primary")
 
 # --- PROCESSING LOGIC ---
 if submitted:
@@ -123,6 +91,10 @@ if submitted:
         st.error("Please add at least one item.")
         st.stop()
 
+    # Auto-fill empty rows (for when user clicks '+' but doesn't type an Item)
+    # We fill the Item with the first available item so the app doesn't crash
+    edited_df["Item"] = edited_df["Item"].fillna(list(items.keys())[0])
+    
     total_base_amount = 0.0
     total_cgst = 0.0
     total_sgst = 0.0
@@ -137,14 +109,18 @@ if submitted:
     
     try:
         for index, row in edited_df.iterrows():
+            # Skip rows that are completely empty (if user added a row and didn't use it)
+            if pd.isna(row["Qty"]) or row["Qty"] == 0:
+                continue
+                
             item_name = row["Item"]
             qty = float(row["Qty"])
-            moisture_pct = float(row["Moisture %"])
-            price = float(row["Price"])
-            cgst_pct = float(row["CGST %"])
-            sgst_pct = float(row["SGST %"])
-            igst_pct = float(row["IGST %"])
-            transport_amt = float(row["Transport Amt"])
+            moisture_pct = float(row["Moisture %"]) if not pd.isna(row["Moisture %"]) else 0.0
+            price = float(row["Price"]) if not pd.isna(row["Price"]) else 0.0
+            cgst_pct = float(row["CGST %"]) if not pd.isna(row["CGST %"]) else 0.0
+            sgst_pct = float(row["SGST %"]) if not pd.isna(row["SGST %"]) else 0.0
+            igst_pct = float(row["IGST %"]) if not pd.isna(row["IGST %"]) else 0.0
+            transport_amt = float(row["Transport Amt"]) if not pd.isna(row["Transport Amt"]) else 0.0
             
             moisture_qty = qty * (moisture_pct / 100.0)
             actual_qty = qty - moisture_qty
@@ -182,6 +158,10 @@ if submitted:
                 "Total amount": row_total
             })
 
+        if not line_items_to_save:
+            st.error("Please add at least one item with a valid quantity.")
+            st.stop()
+
         gross_total = total_base_amount + total_cgst + total_sgst + total_igst + total_transport + other_charges
         rounded_total = round(gross_total)
         round_off_diff = rounded_total - gross_total
@@ -218,11 +198,6 @@ if submitted:
 
         st.balloons()
         st.success(f"✅ Invoice {inv_no} Saved! (ID: {master_id}) with {len(line_items_to_save)} items.")
-        
-        # Clear the grid for the next invoice
-        st.session_state.purchase_grid = pd.DataFrame([
-            {"Item": list(items.keys())[0], "Qty": 1.00, "Moisture %": 0.00, "Price": 0.00, "CGST %": 0.00, "SGST %": 0.00, "IGST %": 0.00, "Transport Amt": 0.00}
-        ])
         
     except Exception as e:
         st.error(f"Error saving purchase: {e}")
