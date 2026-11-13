@@ -15,7 +15,6 @@ with st.spinner("Loading purchases..."):
 if not purchases:
     st.info("No purchases recorded yet.")
 else:
-    # Convert to DataFrame for easy filtering
     df = pd.DataFrame(purchases)
     
     # --- FILTERS ---
@@ -28,7 +27,6 @@ else:
     with c3:
         search_month = st.selectbox("Month", ["All", "January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"])
         
-    # Apply Filters
     filtered_df = df.copy()
     if search_inv:
         filtered_df = filtered_df[filtered_df["Invoice no"].str.contains(search_inv, case=False, na=False)]
@@ -54,10 +52,7 @@ else:
     selected_inv = st.selectbox("Select Purchase ID", [""] + filtered_df["Purchase ID"].tolist())
     
     if selected_inv:
-        # Fetch the specific header
         row = next((p for p in purchases if p["Purchase ID"] == selected_inv), None)
-        
-        # Fetch the specific line items linked to this Purchase ID
         items = [i for i in purchase_items if i["Purchase ID"] == selected_inv]
         
         col1, col2 = st.columns([2, 1])
@@ -70,22 +65,28 @@ else:
             st.write(f"**Vehicle:** {row.get('Vehicle No')} | **Transporter:** {row.get('Transporter Name')}")
             st.write(f"**Total Amount:** ₹ {float(row.get('Total amount', 0)):,.2f}")
             
+            if row.get("Invoice Link"):
+                st.markdown(f"[📄 View Invoice Document]({row['Invoice Link']})")
+            else:
+                st.write("No invoice attached.")
+            
             if items:
                 st.write("**Line Items:**")
-                st.dataframe(pd.DataFrame(items)[["Item", "Qty", "Unit", "price", "Moisture %", "Actual Qty", "Total amount"]], hide_index=True, use_container_width=True)
+                df_items = pd.DataFrame(items)
+                if "Purchase ID" in df_items.columns:
+                    display_cols = ["Purchase ID", "Line ID", "Item", "Qty", "Unit", "price", "Moisture %", "Actual Qty", "Total amount"]
+                else:
+                    display_cols = ["Line ID", "Item", "Qty", "Unit", "price", "Moisture %", "Actual Qty", "Total amount"]
+                st.dataframe(df_items[display_cols], hide_index=True, use_container_width=True)
                 
         with col2:
             st.warning("⚠️ Danger Zone")
             st.write("Deleting a purchase will also delete its line items.")
             
-            # Confirm before deleting
             confirm = st.checkbox("Yes, I want to delete this invoice.")
             if st.button("🗑️ Delete Invoice", type="primary", disabled=not confirm, use_container_width=True):
                 with st.spinner("Deleting..."):
-                    # 1. Hard delete the header
                     sheets_db.delete_row("purchases", selected_inv, user_id=user["User ID"], hard=True)
-                    
-                    # 2. Hard delete the line items
                     for i in items:
                         sheets_db.delete_row("purchase_items", i["Line ID"], user_id=user["User ID"], hard=True)
                         
