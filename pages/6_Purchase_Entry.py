@@ -12,6 +12,7 @@ st.title("🧾 Purchase Entry")
 # 1. Fetch Master Data
 with st.spinner("Loading master data..."):
     parties = {p["Party Name"]: p for p in sheets_db.list_all("party_master", only_active=True)}
+    farms = {f["Farm Name"]: f for f in sheets_db.list_all("farm_master", only_active=True)}
     items = {i["Item Name"]: i for i in sheets_db.list_all("item_master", only_active=True)}
     employees = {e["Name"]: e for e in sheets_db.list_all("employee_master", only_active=True)}
     transporters = {t["Name"]: t for t in sheets_db.list_all("transporter_master", only_active=True)}
@@ -22,11 +23,12 @@ if not parties or not items:
 
 with st.form("purchase_form", clear_on_submit=True):
     # --- ROW 1: Basic Info ---
-    c1, c2, c3, c4 = st.columns(4)
+    c1, c2, c3, c4, c5 = st.columns(5)
     with c1: inv_date = st.date_input("Date", value=date.today())
     with c2: inv_no = st.text_input("Invoice No *")
     with c3: party_name = st.selectbox("Party Name *", list(parties.keys()))
-    with c4: employee_name = st.selectbox("Employee Name *", list(employees.keys()) if employees else ["N/A"])
+    with c4: farm_name = st.selectbox("Farm Name", ["None"] + list(farms.keys()))
+    with c5: employee_name = st.selectbox("Employee Name *", list(employees.keys()) if employees else ["N/A"])
 
     # --- ROW 2: Transport Info ---
     c1, c2, c3, c4 = st.columns(4)
@@ -68,7 +70,7 @@ with st.form("purchase_form", clear_on_submit=True):
     with c2: igst_pct = st.number_input("IGST %", min_value=0.0, step=0.1)
     
     st.divider()
-    # --- INVOICE LINK (No Drive Upload) ---
+    # --- INVOICE LINK ---
     invoice_link = st.text_input("Invoice Link (Paste Google Drive / OneDrive link here)")
     
     st.write("")
@@ -83,16 +85,12 @@ if submitted:
     # --- Math (Gross Amount Calculation) ---
     moisture_qty = qty * (moisture_pct / 100.0)
     actual_qty = qty - moisture_qty
-    
-    # Amount is calculated on the GROSS Qty (not deducted)
     amount = qty * price
     
-    # GST Calculation
     cgst_amt = amount * (cgst_pct / 100.0)
     sgst_amt = amount * (sgst_pct / 100.0)
     igst_amt = amount * (igst_pct / 100.0)
     
-    # Gross Total
     gross_total = amount + cgst_amt + sgst_amt + igst_amt + transport_amt + other_charges
     rounded_total = round(gross_total)
     round_off_diff = rounded_total - gross_total
@@ -115,7 +113,9 @@ if submitted:
                 "Transporter ID": transporters[transporter_name]["Transporter ID"] if transporter_name != "None" else "", "Transporter Name": transporter_name,
                 "Starting Km": start_km, "End Km": end_km, "Km covered": km_covered,
                 "Transportation Amount": transport_amt, "Other Charges": other_charges, "Places Visited": places_visited,
-                "Invoice Link": invoice_link
+                "Invoice Link": invoice_link,
+                "Farm ID": farms[farm_name]["Farm ID"] if farm_name != "None" else "",
+                "Farm Name": farm_name if farm_name != "None" else ""
             }
             saved_purchase = sheets_db.insert_row("purchases", purchase_data, user_id=user["User ID"])
             
