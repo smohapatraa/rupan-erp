@@ -18,7 +18,18 @@ SCHEMA: dict[str, list[str]] = {
     "item_master": ["Item ID", "Item Name", "Unit", "Default Price", "Active", "Created At"],
     "transporter_master": ["Transporter ID", "Name", "Contact", "Vehicle Count", "Active", "Created At"],
     "employee_master": ["Employee ID", "Name", "Role", "Contact", "Active", "Created At"],
-    "purchases": ["Purchase ID", "Month", "Year", "Date", "Invoice no", "Party ID", "Party name", "Item ID", "Item", "Moisture %", "Qty", "Unit", "price", "Amount", "CGST", "SGST", "IGST", "ROUND OFF", "Total amount", "Moisture Qty", "Actual Qty", "Employee ID", "Employee Name", "Transport Type", "Vehicle No", "Transporter ID", "Transporter Name", "Starting Km", "End Km", "Km covered", "Transportation Amount", "Other Charges", "Places Visited", "Invoice Link", "Created At"],
+    "purchases": [
+        "Purchase ID", "Month", "Year", "Date", "Invoice no", 
+        "Party ID", "Party name", 
+        "Item ID", "Item", 
+        "Moisture %", "Qty", "Unit", "price", "Amount", "CGST", "SGST", "IGST", "ROUND OFF", "Total amount", 
+        "Moisture Qty", "Actual Qty", "Employee ID", "Employee Name", "Transport Type", "Vehicle No", 
+        "Transporter ID", "Transporter Name", "Starting Km", "End Km", "Km covered", 
+        "Transportation Amount", "Other Charges", "Places Visited", 
+        "Invoice Link", 
+        "Farm ID", "Farm Name", 
+        "Created At"
+    ],
     "purchase_items": ["Line ID", "Purchase ID", "Item ID", "Item", "Qty", "Unit", "price", "Amount", "Moisture %", "Moisture Qty", "Actual Qty", "CGST", "SGST", "IGST", "ROUND OFF", "Total amount"],
     "audit_log": ["Log ID", "Timestamp", "User ID", "Action", "Table", "Record ID", "Old Value", "New Value"],
     "config": ["Key", "Value", "Description", "Updated At"],
@@ -209,7 +220,6 @@ def delete_row(tab: str, record_id: str, user_id: Optional[str] = None, hard: bo
                 break
                 
         if row_num is not None:
-            # Find the sheet ID for the tab
             spreadsheet = service.spreadsheets().get(spreadsheetId=sheet_id).execute()
             sheet_gid = None
             for s in spreadsheet['sheets']:
@@ -242,20 +252,3 @@ def healthcheck():
         return {"status": "ok", "message": "API connected successfully!"}
     except Exception as e:
         return {"status": "error", "message": str(e)}
-
-def upload_invoice_to_drive(file_bytes, filename, folder_id, mime_type="application/pdf"):
-    """
-    Uploads a file to a specific Google Drive folder and returns the web view link.
-    """
-    creds = Credentials.from_service_account_info(dict(st.secrets["gcp_service_account"]), scopes=_SCOPES)
-    service = build('drive', 'v3', credentials=creds, cache_discovery=False)
-    
-    file_metadata = {'name': filename, 'parents': [folder_id]}
-    media = MediaIoBaseUpload(io.BytesIO(file_bytes), mimetype=mime_type, resumable=True)
-    
-    try:
-        file = service.files().create(body=file_metadata, media_body=media, fields='id, webViewLink', supportsAllDrives=True).execute()
-        service.permissions().create(fileId=file.get('id'), body={'type': 'anyone', 'role': 'reader'}, supportsAllDrives=True).execute()
-        return file.get('webViewLink')
-    except HttpError as error:
-        raise RuntimeError(f"Drive upload failed: {error}")
