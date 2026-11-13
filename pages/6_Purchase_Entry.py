@@ -21,7 +21,7 @@ if not parties or not items:
     st.error("You must add at least one Party and one Item in the Master tables.")
     st.stop()
 
-with st.form("multi_item_purchase_form", clear_on_submit=True):
+with st.form("multi_item_purchase_form"):
     
     # --- SECTION 1: INVOICE HEADER ---
     st.subheader("1. Invoice Details")
@@ -55,7 +55,6 @@ with st.form("multi_item_purchase_form", clear_on_submit=True):
     st.subheader("2. Line Items")
     st.write("Click the '+' at the bottom of the table to add a new row.")
     
-    # Create the default first row
     default_data = pd.DataFrame([
         {"Item": list(items.keys())[0], "Qty": 1.00, "Moisture %": 0.00, "Price": 0.00, "CGST %": 0.00, "SGST %": 0.00, "IGST %": 0.00, "Transport Amt": 0.00}
     ])
@@ -89,30 +88,25 @@ if submitted:
         st.error("Please add at least one item.")
         st.stop()
 
-    # --- THE MAGIC FIX: Auto-fill the empty row that '+' creates ---
-    # 1. Fill the Item name if it's blank
+    # Auto-fill the empty row that '+' creates
     edited_df["Item"] = edited_df["Item"].fillna(list(items.keys())[0])
     
-    # 2. If a row has NaN in Qty, it means the user just clicked '+' and hasn't typed yet.
-    # We will copy the taxes and transport from the row above it.
     for i in range(1, len(edited_df)):
         if pd.isna(edited_df.at[i, "Qty"]):
-            # Copy the Item and Tax/Transport values from the previous row
             edited_df.at[i, "Item"] = edited_df.at[i-1, "Item"]
             edited_df.at[i, "CGST %"] = edited_df.at[i-1, "CGST %"]
             edited_df.at[i, "SGST %"] = edited_df.at[i-1, "SGST %"]
             edited_df.at[i, "IGST %"] = edited_df.at[i-1, "IGST %"]
             edited_df.at[i, "Transport Amt"] = edited_df.at[i-1, "Transport Amt"]
-            # Set the numeric values to 0
             edited_df.at[i, "Qty"] = 0.00
             edited_df.at[i, "Price"] = 0.00
             edited_df.at[i, "Moisture %"] = 0.00
 
-    # Remove completely empty rows (where Qty is 0)
+    # Remove empty rows
     edited_df = edited_df[edited_df["Qty"] > 0]
     
     if edited_df.empty:
-        st.error("Please enter a Quantity greater than 0 for at least one item.")
+        st.error("Please enter a Quantity greater than 0.")
         st.stop()
 
     total_base_amount = 0.0
@@ -181,10 +175,6 @@ if submitted:
         avg_moisture = (weighted_moisture / total_qty) if total_qty > 0 else 0.0
         avg_price = (total_base_amount / total_qty) if total_qty > 0 else 0.0
 
-        st.success(f"Calculated Total: ₹ {rounded_total:,.2f}")
-        st.info(f"Total Qty: {total_qty:.2f} | Total Moisture Qty: {total_moisture_qty:.2f} | Total Actual Qty: {total_actual_qty:.2f}")
-        st.info(f"Avg Moisture: {avg_moisture:.2f}% | Avg Price: ₹ {avg_price:,.2f}")
-
         purchase_data = {
             "Month": inv_date.strftime("%B"), "Year": inv_date.strftime("%Y"), "Date": inv_date.strftime("%Y-%m-%d"),
             "Invoice no": inv_no, "Party ID": parties[party_name]["Party ID"], "Party name": party_name,
@@ -209,7 +199,8 @@ if submitted:
             sheets_db.insert_row("purchase_items", item_data, user_id=user["User ID"])
 
         st.balloons()
-        st.success(f"✅ Invoice {inv_no} Saved! (ID: {master_id}) with {len(line_items_to_save)} items.")
+        st.success(f"✅ Invoice {inv_no} Saved!")
+        st.info(f"Master Purchase ID: **{master_id}** | {len(line_items_to_save)} line items saved to purchase_items tab.")
         
     except Exception as e:
         st.error(f"Error saving purchase: {e}")
