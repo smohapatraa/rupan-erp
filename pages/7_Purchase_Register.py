@@ -1,226 +1,103 @@
 import streamlit as st
 import pandas as pd
-from datetime import date
 from core import sheets_db
 from core import auth
 
 auth.require_login()
 user = auth.current_user()
 
-st.title("🧾 Purchase Entry (Multi-Item)")
+st.title("📊 Purchase Register")
 
-# 1. Fetch Master Data
-with st.spinner("Loading master data..."):
-    parties = {p["Party Name"]: p for p in sheets_db.list_all("party_master", only_active=True)}
-    items = {i["Item Name"]: i for i in sheets_db.list_all("item_master", only_active=True)}
-    employees = {e["Name"]: e for e in sheets_db.list_all("employee_master", only_active=True)}
-    transporters = {t["Name"]: t for t in sheets_db.list_all("transporter_master", only_active=True)}
-    farms = {f["Farm Name"]: f for f in sheets_db.list_all("farm_master", only_active=True)}
+# 1. Load Data
+with st.spinner("Loading purchases..."):
+    purchases = sheets_db.list_all("purchases")
+    purchase_items = sheets_db.list_all("purchase_items")
 
-if not parties or not items:
-    st.error("You must add at least one Party and one Item in the Master tables.")
+if not purchases:
+    st.info("No purchases recorded yet.")
     st.stop()
 
-# --- NEW ENTRY BUTTON ---
-if "form_key" not in st.session_state:
-    st.session_state.form_key = 0
+df = pd.DataFrame(purchases)
 
-col1, col2 = st.columns([1, 4])
-with col1:
-    if st.button("➕ New Entry", use_container_width=True, type="primary"):
-        st.session_state.form_key += 1
-        st.rerun()
+# 2. Filters
+st.subheader("Filters")
+c1, c2, c3 = st.columns(3)
+with c1:
+    search_inv = st.text_input("Search Invoice No", "")
+with c2:
+    search_party = st.text_input("Search Party Name", "")
+with c3:
+    search_month = st.selectbox("Month", ["All", "January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"])
 
-# We use the form_key to force Streamlit to wipe the form clean
-with st.form(f"multi_item_purchase_form_{st.session_state.form_key}"):
+# Apply filters
+filtered_df = df.copy()
+if search_inv:
+    filtered_df = filtered_df[filtered_df["Invoice no"].str.contains(search_inv, case=False, na=False)]
+if search_party:
+    filtered_df = filtered_df[filtered_df["Party name"].str.contains(search_party, case=False, na=False)]
+if search_month != "All":
+    filtered_df = filtered_df[filtered_df["Month"] == search_month]
+
+# 3. Display Table
+st.write(f"Showing {len(filtered_df)} records")
+
+display_cols = ["Purchase ID", "Date", "Invoice no", "Party name", "Item", "Qty", "Total amount"]
+st.dataframe(
+    filtered_df[display_cols], 
+    use_container_width=True,
+    hide_index=True
+)
+
+st.divider()
+
+# 4. View Invoice Details
+st.subheader("View Invoice Details")
+selected_inv = st.selectbox("Select Purchase ID", [""] + filtered_df["Purchase ID"].tolist())
+
+if selected_inv:
+    # Find the header and line items
+    row = next((p for p in purchases if p["Purchase ID"] == selected_inv), None)
+    items = [i for i in purchase_items if str(i.get("Purchase ID")) == str(selected_inv)]
     
-    # --- SECTION 1: INVOICE HEADER ---
-    st.subheader("1. Invoice Details")
-    c1, c2, c3, c4 = st.columns(4)
-    with c1: inv_date = st.date_input("Date", value=date.today())
-    with c2: inv_no = st.text_input("Invoice No *")
-    with c3: party_name = st.selectbox("Party Name *", list(parties.keys()))
-    with c4: 
-        farm_name = st.selectbox("Farm Name", ["None"] + list(farms.keys()))
-        farm_id = farms[farm_name]["Farm ID"] if farm_name != "None" else ""
-
-    c1, c2, c3, c4 = st.columns(4)
-    with c1: employee_name = st.selectbox("Employee Name *", list(employees.keys()) if employees else ["N/A"])
-    with c2: transport_type = st.selectbox("Transport Type", ["By Vehicle", "By Transporter", "Self Pickup"])
-    with c3: vehicle_no = st.text_input("Vehicle No")
-    with c4: transporter_name = st.selectbox("Transporter Name", ["None"] + list(transporters.keys()))
-
-    c1, c2, c3, c4 = st.columns(4)
-    with c1: places_visited = st.text_input("Places Visited")
-    with c2: start_km = st.number_input("Starting Km", min_value=0.0, step=1.0)
-    with c3: end_km = st.number_input("End Km", min_value=0.0, step=1.0)
-    with c4: km_covered = st.number_input("Km Covered", min_value=0.0, step=1.0, value=float(end_km - start_km) if end_km > start_km else 0.0)
-
-    c1, c2 = st.columns(2)
-    with c1: other_charges = st.number_input("Other Charges (₹)", min_value=0.0, step=1.0)
-    with c2: invoice_link = st.text_input("Invoice Link (Drive / OneDrive)")
-
-    st.divider()
-
-    # --- SECTION 2: MULTI-ITEM GRID ---
-    st.subheader("2. Line Items")
-    st.write("Click the '+' at the bottom of the table to add a new row.")
+    col1, col2 = st.columns([2, 1])
     
-    default_data = pd.DataFrame([
-        {"Item": list(items.keys())[0], "Qty": 1.00, "Moisture %": 0.00, "Price": 0.00, "CGST %": 0.00, "SGST %": 0.00, "IGST %": 0.00, "Transport Amt": 0.00}
-    ])
-
-    edited_df = st.data_editor(
-        default_data,
-        num_rows="dynamic",
-        use_container_width=True,
-        column_config={
-            "Item": st.column_config.SelectboxColumn("Item", options=list(items.keys()), required=True),
-            "Qty": st.column_config.NumberColumn("Qty", min_value=0.1, step=1.0, format="%.2f", required=True),
-            "Moisture %": st.column_config.NumberColumn("Moisture %", min_value=0.0, max_value=100.0, step=0.1, format="%.2f"),
-            "Price": st.column_config.NumberColumn("Price (₹)", min_value=0.0, step=0.01, format="%.2f", required=True),
-            "CGST %": st.column_config.NumberColumn("CGST %", min_value=0.0, step=0.1, format="%.2f"),
-            "SGST %": st.column_config.NumberColumn("SGST %", min_value=0.0, step=0.1, format="%.2f"),
-            "IGST %": st.column_config.NumberColumn("IGST %", min_value=0.0, step=0.1, format="%.2f"),
-            "Transport Amt": st.column_config.NumberColumn("Transport Amt (₹)", min_value=0.0, step=1.0, format="%.2f"),
-        }
-    )
-
-    st.write("")
-    submitted = st.form_submit_button("💾 Calculate & Save Invoice", use_container_width=True, type="primary")
-
-# --- PROCESSING LOGIC ---
-if submitted:
-    if not inv_no:
-        st.error("Invoice Number is required.")
-        st.stop()
+    with col1:
+        st.write(f"**Invoice No:** {row.get('Invoice no')}")
+        st.write(f"**Date:** {row.get('Date')}")
+        st.write(f"**Party:** {row.get('Party name')}")
+        st.write(f"**Employee:** {row.get('Employee Name')}")
+        st.write(f"**Vehicle:** {row.get('Vehicle No')} | **Transporter:** {row.get('Transporter Name')}")
+        st.write(f"**Total Amount:** ₹ {float(row.get('Total amount', 0) or 0):,.2f}")
         
-    if edited_df.empty:
-        st.error("Please add at least one item.")
-        st.stop()
-
-    # Auto-fill the empty row that '+' creates
-    edited_df["Item"] = edited_df["Item"].fillna(list(items.keys())[0])
-    
-    for i in range(1, len(edited_df)):
-        if pd.isna(edited_df.at[i, "Qty"]):
-            edited_df.at[i, "Item"] = edited_df.at[i-1, "Item"]
-            edited_df.at[i, "CGST %"] = edited_df.at[i-1, "CGST %"]
-            edited_df.at[i, "SGST %"] = edited_df.at[i-1, "SGST %"]
-            edited_df.at[i, "IGST %"] = edited_df.at[i-1, "IGST %"]
-            edited_df.at[i, "Transport Amt"] = edited_df.at[i-1, "Transport Amt"]
-            edited_df.at[i, "Qty"] = 0.00
-            edited_df.at[i, "Price"] = 0.00
-            edited_df.at[i, "Moisture %"] = 0.00
-
-    # Remove empty rows
-    edited_df = edited_df[edited_df["Qty"] > 0]
-    
-    if edited_df.empty:
-        st.error("Please enter a Quantity greater than 0.")
-        st.stop()
-
-    total_base_amount = 0.0
-    total_cgst = 0.0
-    total_sgst = 0.0
-    total_igst = 0.0
-    total_transport = 0.0
-    total_qty = 0.0
-    total_moisture_qty = 0.0
-    total_actual_qty = 0.0
-    weighted_moisture = 0.0
-    
-    line_items_to_save = []
-    
-    try:
-        for index, row in edited_df.iterrows():
-            item_name = row["Item"]
-            qty = float(row["Qty"])
-            moisture_pct = float(row["Moisture %"]) if not pd.isna(row["Moisture %"]) else 0.0
-            price = float(row["Price"]) if not pd.isna(row["Price"]) else 0.0
-            cgst_pct = float(row["CGST %"]) if not pd.isna(row["CGST %"]) else 0.0
-            sgst_pct = float(row["SGST %"]) if not pd.isna(row["SGST %"]) else 0.0
-            igst_pct = float(row["IGST %"]) if not pd.isna(row["IGST %"]) else 0.0
-            transport_amt = float(row["Transport Amt"]) if not pd.isna(row["Transport Amt"]) else 0.0
+        if row.get("Invoice Link"):
+            st.markdown(f"[📄 View Invoice Document]({row['Invoice Link']})")
+        else:
+            st.write("No invoice attached.")
+        
+        st.write("**Line Items:**")
+        if items:
+            df_items = pd.DataFrame(items)
+            # Ensure we only show columns that actually exist in the data
+            possible_cols = ["Purchase ID", "Line ID", "Item", "Qty", "Unit", "price", "Moisture %", "Actual Qty", "Total amount"]
+            display_cols = [c for c in possible_cols if c in df_items.columns]
+            st.dataframe(df_items[display_cols], hide_index=True, use_container_width=True)
+        else:
+            st.warning("No line items found for this Purchase ID.")
             
-            moisture_qty = qty * (moisture_pct / 100.0)
-            actual_qty = qty - moisture_qty
-            amount = qty * price
-            
-            cgst_amt = amount * (cgst_pct / 100.0)
-            sgst_amt = amount * (sgst_pct / 100.0)
-            igst_amt = amount * (igst_pct / 100.0)
-            row_total = amount + cgst_amt + sgst_amt + igst_amt + transport_amt
-            
-            total_base_amount += amount
-            total_cgst += cgst_amt
-            total_sgst += sgst_amt
-            total_igst += igst_amt
-            total_transport += transport_amt
-            total_qty += qty
-            total_moisture_qty += moisture_qty
-            total_actual_qty += actual_qty
-            weighted_moisture += (moisture_pct * qty)
-            
-            unit = items[item_name].get("Unit", "Kg")
-            line_items_to_save.append({
-                "Item ID": items[item_name]["Item ID"],
-                "Item": item_name,
-                "Qty": qty,
-                "Unit": unit,
-                "price": price,
-                "Amount": amount,
-                "Moisture %": moisture_pct,
-                "Moisture Qty": moisture_qty,
-                "Actual Qty": actual_qty,
-                "CGST": cgst_amt,
-                "SGST": sgst_amt,
-                "IGST": igst_amt,
-                "Total amount": row_total
-            })
-
-        gross_total = total_base_amount + total_cgst + total_sgst + total_igst + total_transport + other_charges
-        rounded_total = round(gross_total)
-        round_off_diff = rounded_total - gross_total
+    with col2:
+        st.warning("⚠️ Danger Zone")
+        st.write("Deleting a purchase will also delete its line items.")
         
-        avg_moisture = (weighted_moisture / total_qty) if total_qty > 0 else 0.0
-        avg_price = (total_base_amount / total_qty) if total_qty > 0 else 0.0
-
-        purchase_data = {
-            "Month": inv_date.strftime("%B"), "Year": inv_date.strftime("%Y"), "Date": inv_date.strftime("%Y-%m-%d"),
-            "Invoice no": inv_no, "Party ID": parties[party_name]["Party ID"], "Party name": party_name,
-            "Item ID": "", "Item": "Multiple Items", 
-            "Moisture %": avg_moisture, "Qty": total_qty, "Unit": "Mixed", "price": avg_price, "Amount": total_base_amount,
-            "CGST": total_cgst, "SGST": total_sgst, "IGST": total_igst, "ROUND OFF": round_off_diff, "Total amount": rounded_total,
-            "Moisture Qty": total_moisture_qty, "Actual Qty": total_actual_qty,
-            "Employee ID": employees[employee_name]["Employee ID"] if employee_name != "N/A" else "", "Employee Name": employee_name,
-            "Transport Type": transport_type, "Vehicle No": vehicle_no,
-            "Transporter ID": transporters[transporter_name]["Transporter ID"] if transporter_name != "None" else "", "Transporter Name": transporter_name,
-            "Starting Km": start_km, "End Km": end_km, "Km covered": km_covered,
-            "Transportation Amount": total_transport, "Other Charges": other_charges, "Places Visited": places_visited,
-            "Farm ID": farm_id, "Farm Name": farm_name,
-            "Invoice Link": invoice_link
-        }
-        
-        # Save Header
-        saved_purchase = sheets_db.insert_row("purchases", purchase_data, user_id=user["User ID"])
-        master_id = saved_purchase.get("Purchase ID") or saved_purchase.get("purchase_id")
-        
-        if not master_id:
-            st.error(f"CRITICAL ERROR: Could not generate Purchase ID. Sheet returned: {saved_purchase}")
-            st.stop()
-
-        # Save Line Items
-        for item_data in line_items_to_save:
-            item_data["Purchase ID"] = master_id
-            sheets_db.insert_row("purchase_items", item_data, user_id=user["User ID"])
-
-        st.balloons()
-        st.success(f"✅ Invoice {inv_no} Saved!")
-        st.info(f"Master Purchase ID: **{master_id}** | {len(line_items_to_save)} line items saved.")
-        
-        # AUTO-RESET: Clear the form for the next entry automatically
-        st.session_state.form_key += 1
-        
-    except Exception as e:
-        st.error(f"Error saving purchase: {e}")
+        confirm = st.checkbox("Yes, I want to delete this invoice.")
+        if st.button("🗑️ Delete Invoice", type="primary", disabled=not confirm, use_container_width=True):
+            with st.spinner("Deleting..."):
+                # 1. Hard delete the header
+                sheets_db.delete_row("purchases", selected_inv, user_id=user["User ID"], hard=True)
+                
+                # 2. Hard delete the line items
+                for i in items:
+                    if "Line ID" in i:
+                        sheets_db.delete_row("purchase_items", i["Line ID"], user_id=user["User ID"], hard=True)
+                    
+            st.success("Invoice deleted successfully!")
+            st.rerun()
