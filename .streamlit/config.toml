@@ -1,9 +1,14 @@
 [theme]
-primaryColor = "#1f77b4"
+# Matches your Rupan Renewables branding (Green & Orange)
+primaryColor = "#2e7d32"
 backgroundColor = "#ffffff"
-secondaryBackgroundColor = "#f0f2f6"
+secondaryBackgroundColor = "#f4fbf4"
 textColor = "#262730"
 font = "sans serif"
+
+[client]
+# Hides the "Fork" button, GitHub icon, and 3-dot menu
+toolbarMode = "minimal"
 
 [server]
 enableXsrfProtection = true
