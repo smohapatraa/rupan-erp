@@ -9,24 +9,8 @@ st.set_page_config(
     page_title="Rupan Renewables ERP",
     page_icon="🌱",
     layout="wide",
-    initial_sidebar_state="expanded"  # <--- Forces sidebar to be open by default
+    initial_sidebar_state="expanded"  # <--- Forces the sidebar to open
 )
-
-# ------------------------------------------------------------
-# SAFE CSS: Hide Fork/GitHub & Footer (Keeps Sidebar Safe)
-# ------------------------------------------------------------
-st.markdown("""
-<style>
-    /* Hides the top right menu (Fork, GitHub, 3-dots) */
-    .stApp [data-testid="stToolbar"] {visibility: hidden;}
-    
-    /* Hides the main menu */
-    #MainMenu {visibility: hidden;}
-    
-    /* Hides the footer */
-    footer {visibility: hidden;}
-</style>
-""", unsafe_allow_html=True)
 
 # 2. Initialize Session State
 if "user" not in st.session_state:
@@ -38,20 +22,18 @@ if st.session_state["user"] is None:
     
     with col2:
         # --- LOGO & BRANDING ---
-        # If you have logo.png in your repo, it will show it. Otherwise, it shows text.
         try:
             logo_col1, logo_col2, logo_col3 = st.columns([1, 2, 1])
             with logo_col2:
                 st.image("logo.png", use_container_width=True) 
         except:
-            pass # Skips if logo.png is not found
+            pass 
             
         st.markdown("<h1 style='text-align: center; color: #1e5631; margin-bottom: 0;'>Rupan Renewables</h1>", unsafe_allow_html=True)
         st.markdown("<p style='text-align: center; color: #666; font-size: 1.1em; margin-top: 5px;'>Sustainable Energy Solutions for a Greener Tomorrow</p>", unsafe_allow_html=True)
         
-        st.write("") # spacer
+        st.write("") 
         
-        # Login Form inside a styled container
         with st.container():
             st.markdown("""
             <style>
@@ -91,7 +73,6 @@ if st.session_state["user"] is None:
 user = st.session_state["user"]
 
 with st.sidebar:
-    # Sidebar Branding
     try:
         st.image("logo.png", use_container_width=True)
     except:
@@ -101,7 +82,6 @@ with st.sidebar:
     st.markdown("<p style='text-align: center; color: #888; font-size: 0.85em;'>Biomass ERP System</p>", unsafe_allow_html=True)
     st.divider()
     
-    # User Info
     st.markdown(f"👤 **{user.get('Username')}**")
     st.caption(f"Role: {user.get('Role')}")
     
@@ -115,9 +95,6 @@ with st.sidebar:
 st.title("📊 Dashboard")
 st.caption(f"Welcome back, **{user.get('Username')}**. Here is your operations summary.")
 
-# ------------------------------------------------------------
-# 5a. LOAD DATA
-# ------------------------------------------------------------
 @st.cache_data(ttl=300, show_spinner="Loading dashboard…")
 def load_dashboard_data():
     return sheets_db.list_all("purchases")
@@ -141,9 +118,6 @@ df["Qty"] = pd.to_numeric(df["Qty"], errors="coerce")
 df["Year"] = pd.to_numeric(df["Year"], errors="coerce")
 df["Month"] = df["Month"].astype("string").str.strip()
 
-# ------------------------------------------------------------
-# 5b. FILTERS — Farm + Month/Year
-# ------------------------------------------------------------
 st.markdown("### 🎯 Filters")
 f1, f2, f3, f4 = st.columns([2, 2, 1.5, 1.5])
 
@@ -177,11 +151,7 @@ if date_mode == "Use Date range":
     start_date = st.date_input("From", value=default_start, min_value=min_d, max_value=max_d)
     end_date = st.date_input("To", value=default_end, min_value=min_d, max_value=max_d)
 
-# ------------------------------------------------------------
-# 5c. APPLY FILTERS
-# ------------------------------------------------------------
 mask = df["Farm Name"].notna()
-
 include_blank = "(blank)" in selected_farms
 farm_mask = df["Farm Name"].isin([f for f in selected_farms if f != "(blank)"])
 if include_blank:
@@ -198,11 +168,7 @@ else:
 
 fdf = df.loc[mask].copy()
 
-# ------------------------------------------------------------
-# 5d. KPI CARDS
-# ------------------------------------------------------------
 st.markdown("---")
-
 k1, k2, k3, k4, k5 = st.columns(5)
 total_rows = len(fdf)
 total_amt = fdf["Total amount"].sum() if not fdf.empty else 0
@@ -216,9 +182,6 @@ with k3: st.metric("📦 Total Qty", f"{total_qty:,.0f}")
 with k4: st.metric("🏞️ Active Farms", f"{total_farms}")
 with k5: st.metric("🤝 Suppliers", f"{total_parties}")
 
-# ------------------------------------------------------------
-# 5e. TREND + FARM BREAKDOWN
-# ------------------------------------------------------------
 st.markdown("---")
 chart_col, breakdown_col = st.columns([2, 1])
 
@@ -230,7 +193,6 @@ with chart_col:
     else:
         recent_trend = trend.sort_values("Date", ascending=True).tail(10)
         recent_trend["_label"] = recent_trend["Date"].dt.strftime("%d-%b") + " (" + recent_trend["Purchase ID"].str[-3:] + ")"
-        
         st.bar_chart(
             recent_trend.set_index("_label")["Total amount"],
             use_container_width=True,
@@ -241,7 +203,6 @@ with chart_col:
 with breakdown_col:
     st.markdown("#### 🏞️ Breakdown")
     toggle = st.radio("Group by:", ["Farm", "Month"], horizontal=True, label_visibility="collapsed")
-    
     if fdf.empty:
         st.info("No data.")
     else:
@@ -258,7 +219,6 @@ with breakdown_col:
                .reset_index()
                .rename(columns={"_group": "Category", "Total amount": "Amount"})
         )
-        
         st.bar_chart(
             bdf.set_index("Category")["Amount"],
             use_container_width=True,
@@ -266,22 +226,14 @@ with breakdown_col:
             color="#ff9800"
         )
 
-# ------------------------------------------------------------
-# 5f. TOP SUPPLIERS
-# ------------------------------------------------------------
 st.markdown("---")
 st.markdown("#### 🏆 Top Suppliers by Amount")
-
 if fdf.empty:
     st.info("No data.")
 else:
     top = (
         fdf.groupby("Party name", dropna=False)
-           .agg(
-               Purchases=("Purchase ID", "count"),
-               Qty=("Qty", "sum"),
-               Amount=("Total amount", "sum"),
-           )
+           .agg(Purchases=("Purchase ID", "count"), Qty=("Qty", "sum"), Amount=("Total amount", "sum"))
            .sort_values("Amount", ascending=False)
            .head(10)
            .reset_index()
@@ -294,12 +246,8 @@ else:
         hide_index=True,
     )
 
-# ------------------------------------------------------------
-# 5g. RECENT PURCHASES
-# ------------------------------------------------------------
 st.markdown("---")
 st.markdown("#### 🕒 Recent Purchases")
-
 if fdf.empty:
     st.info("No data.")
 else:
@@ -314,9 +262,6 @@ else:
         hide_index=True,
     )
 
-# ------------------------------------------------------------
-# 5h. SYSTEM STATUS
-# ------------------------------------------------------------
 with st.expander("⚙️ System Status"):
     try:
         if st.button("Run DB Healthcheck"):
