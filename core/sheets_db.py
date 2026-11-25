@@ -116,19 +116,24 @@ def insert_row(tab: str, data: dict[str, Any], user_id: Optional[str] = None, sk
     service = get_service()
     sheet_id = _get_sheet_id()
     headers = get_worksheet_headers(tab)
-    
-    payload = {k: v for k, v in data.items() if k not in AUTO_COLUMNS and k not in ID_COLUMNS}
+
+    # --- FIX: only strip THIS tab's own ID column, not every ID column ---
+    own_id_col = ID_SPEC[tab][1] if tab in ID_SPEC else None
+    payload = {
+        k: v for k, v in data.items()
+        if k not in AUTO_COLUMNS and k != own_id_col
+    }
     for col in headers:
         if col in AUTO_COLUMNS: payload[col] = now_iso()
-    if tab in ID_SPEC: payload[ID_SPEC[tab][1]] = _next_id(tab)
-    
+    if tab in ID_SPEC: payload[own_id_col] = _next_id(tab)
+
     row = _dict_to_row(headers, payload)
     body = {'values': [row]}
     service.spreadsheets().values().append(
         spreadsheetId=sheet_id, range=tab,
         valueInputOption="USER_ENTERED", body=body
     ).execute()
-    
+
     inserted = _row_to_dict(headers, row)
     if not skip_audit and tab != "audit_log":
         log_audit(user_id or "SYSTEM", "INSERT", tab, _record_id_of(tab, inserted), None, inserted)
@@ -161,7 +166,7 @@ def update_row(tab: str, record_id: str, patch: dict[str, Any], user_id: Optiona
     sheet_id = _get_sheet_id()
     headers = get_worksheet_headers(tab)
     data = _get_sheet_data(tab)
-    
+
     row_num = None
     for i, r in enumerate(data):
         if i == 0: continue
@@ -170,15 +175,20 @@ def update_row(tab: str, record_id: str, patch: dict[str, Any], user_id: Optiona
             row_num = i + 1
             old_row = rec
             break
-            
+
     if not row_num: raise KeyError(f"Record {record_id} not found.")
-    
-    clean_patch = {k: v for k, v in patch.items() if k in headers and k not in ID_COLUMNS}
+
+    # --- FIX: only protect THIS tab's own ID column ---
+    own_id_col = ID_SPEC[tab][1] if tab in ID_SPEC else None
+    clean_patch = {
+        k: v for k, v in patch.items()
+        if k in headers and k != own_id_col
+    }
     if "Updated At" in headers: clean_patch["Updated At"] = now_iso()
-    
+
     new_row_dict = dict(old_row)
     new_row_dict.update(clean_patch)
-    
+
     for k, v in clean_patch.items():
         col_idx = headers.index(k)
         col_letter = chr(65 + col_idx)
@@ -189,7 +199,7 @@ def update_row(tab: str, record_id: str, patch: dict[str, Any], user_id: Optiona
             spreadsheetId=sheet_id, range=cell_range,
             valueInputOption="USER_ENTERED", body=body
         ).execute()
-        
+
     log_audit(user_id or "SYSTEM", "UPDATE", tab, record_id, old_row, new_row_dict)
     return new_row_dict
 
@@ -199,15 +209,15 @@ def delete_row(tab: str, record_id: str, user_id: Optional[str] = None, hard: bo
         sheet_id = _get_sheet_id()
         headers = get_worksheet_headers(tab)
         data = _get_sheet_data(tab)
-        
+
         row_num = None
         for i, r in enumerate(data):
             if i == 0: continue
             rec = _row_to_dict(headers, r)
             if rec.get(ID_SPEC[tab][1]) == record_id:
-                row_num = i 
+                row_num = i
                 break
-                
+
         if row_num is not None:
             spreadsheet = service.spreadsheets().get(spreadsheetId=sheet_id).execute()
             sheet_gid = None
@@ -215,7 +225,7 @@ def delete_row(tab: str, record_id: str, user_id: Optional[str] = None, hard: bo
                 if s['properties']['title'] == tab:
                     sheet_gid = s['properties']['sheetId']
                     break
-            
+
             if sheet_gid is not None:
                 body = {
                     "requests": [{
@@ -245,10 +255,10 @@ def healthcheck():
 def upload_invoice_to_drive(file_bytes, filename, folder_id, mime_type="application/pdf"):
     creds = Credentials.from_service_account_info(dict(st.secrets["gcp_service_account"]), scopes=_SCOPES)
     service = build('drive', 'v3', credentials=creds, cache_discovery=False)
-    
+
     file_metadata = {'name': filename, 'parents': [folder_id]}
     media = MediaIoBaseUpload(io.BytesIO(file_bytes), mimetype=mime_type, resumable=True)
-    
+
     try:
         file = service.files().create(body=file_metadata, media_body=media, fields='id, webViewLink', supportsAllDrives=True).execute()
         service.permissions().create(fileId=file.get('id'), body={'type': 'anyone', 'role': 'reader'}, supportsAllDrives=True).execute()
