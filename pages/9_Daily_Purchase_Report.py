@@ -152,8 +152,13 @@ total_amt = float(day_df["Amount"].sum())
 summary_rows.append({"Item": "TOTAL", "Qty (Kgs)": total_qty, "Amount (₹)": total_amt})
 summary_df = pd.DataFrame(summary_rows)
 
+# --- SAFE DISPLAY: coerce "" -> NaN so na_rep handles it ---
+summary_disp = summary_df.copy()
+for c in ["Qty (Kgs)", "Amount (₹)"]:
+    summary_disp[c] = pd.to_numeric(summary_disp[c], errors="coerce")
+
 st.dataframe(
-    summary_df.style.format({"Qty (Kgs)": "{:,.2f}", "Amount (₹)": "{:,.2f}"}),
+    summary_disp.style.format({"Qty (Kgs)": "{:,.2f}", "Amount (₹)": "{:,.2f}"}, na_rep=""),
     use_container_width=True,
     hide_index=True,
 )
@@ -206,8 +211,15 @@ for c in pivot.columns:
     if c.endswith("(Kgs)") or c.endswith("(₹)"):
         fmt[c] = "{:,.2f}"
 
+# --- SAFE DISPLAY: coerce numeric columns; leave S.No & Party name as-is ---
+pivot_disp = pivot.copy()
+for c in pivot_disp.columns:
+    if c in ("S.No", "Party name"):
+        continue
+    pivot_disp[c] = pd.to_numeric(pivot_disp[c], errors="coerce")
+
 st.dataframe(
-    pivot.style.format(fmt, na_rep=""),
+    pivot_disp.style.format(fmt, na_rep=""),
     use_container_width=True,
     hide_index=True,
 )
@@ -289,7 +301,6 @@ def build_pdf() -> bytes:
     headers = list(pivot.columns)
     ncols = len(headers)
 
-    # Auto font size: shrink as column count grows (min 5pt)
     if ncols <= 6:      base_fs = 8.5
     elif ncols <= 8:    base_fs = 8.0
     elif ncols <= 10:   base_fs = 7.5
@@ -300,7 +311,6 @@ def build_pdf() -> bytes:
 
     header_fs = min(base_fs + 0.5, 9)
 
-    # Column width weights
     weights = []
     for h in headers:
         if h == "S.No":              weights.append(0.5)
@@ -308,12 +318,11 @@ def build_pdf() -> bytes:
         elif h == "Moisture %":      weights.append(0.9)
         elif h == "Total (Kgs)":     weights.append(1.3)
         elif h == "Amount (₹)":      weights.append(1.4)
-        else:                        weights.append(1.0)  # per-item columns
+        else:                        weights.append(1.0)
 
     total_w = sum(weights)
     col_widths = [printable_w * w / total_w for w in weights]
 
-    # Build data rows
     cell_style = ParagraphStyle(
         "cell", fontSize=base_fs, leading=base_fs + 1.5, wordWrap="CJK"
     )
