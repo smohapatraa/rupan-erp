@@ -9,7 +9,7 @@ st.set_page_config(
     page_title="Rupan Renewables ERP",
     page_icon="🌱",
     layout="wide",
-    initial_sidebar_state="expanded"  # Forces sidebar to open
+    initial_sidebar_state="expanded"
 )
 
 # 2. Initialize Session State
@@ -21,14 +21,14 @@ if st.session_state["user"] is None:
     col1, col2, col3 = st.columns([1, 2, 1])
     
     with col2:
-        # --- LOGO & BRANDING ---
         try:
             logo_col1, logo_col2, logo_col3 = st.columns([1, 2, 1])
             with logo_col2:
                 st.image("logo.png", use_container_width=True) 
         except:
             pass 
-        
+            
+        st.markdown("<h1 style='text-align: center; color: #1e5631; margin-bottom: 0;'>Rupan Renewables</h1>", unsafe_allow_html=True)
         st.markdown("<p style='text-align: center; color: #666; font-size: 1.1em; margin-top: 5px;'>Sustainable Energy Solutions for a Greener Tomorrow</p>", unsafe_allow_html=True)
         
         st.write("") 
@@ -77,7 +77,7 @@ with st.sidebar:
     except:
         pass
         
-    
+    st.markdown("<h2 style='text-align: center; color: #1e5631; margin-bottom: 0;'>Rupan Renewables</h2>", unsafe_allow_html=True)
     st.markdown("<p style='text-align: center; color: #888; font-size: 0.85em;'>Biomass ERP System</p>", unsafe_allow_html=True)
     st.divider()
     
@@ -96,12 +96,15 @@ st.caption(f"Welcome back, **{user.get('Username')}**. Here is your operations s
 
 @st.cache_data(ttl=300, show_spinner="Loading dashboard…")
 def load_dashboard_data():
-    return sheets_db.list_all("purchases")
+    return (
+        sheets_db.list_all("purchases"),
+        sheets_db.list_all("purchase_items")
+    )
 
 try:
-    purchases = load_dashboard_data()
+    purchases, purchase_items = load_dashboard_data()
 except Exception as e:
-    st.error(f"Failed to load purchases: {e}")
+    st.error(f"Failed to load data: {e}")
     st.stop()
 
 if not purchases:
@@ -109,6 +112,8 @@ if not purchases:
     st.stop()
 
 df = pd.DataFrame(purchases)
+items_df = pd.DataFrame(purchase_items) if purchase_items else pd.DataFrame(columns=["Purchase ID", "Item", "Qty", "Moisture %", "Amount"])
+
 df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
 df["Farm Name"] = df["Farm Name"].astype("string").str.strip()
 df["Total amount"] = pd.to_numeric(df["Total amount"], errors="coerce")
@@ -319,32 +324,89 @@ else:
         st.info("No Employee data available.")
 
 # ------------------------------------------------------------
-# 5g. TOP SUPPLIERS
+# 5g. SUPPLIER-WISE PERFORMANCE REPORT (NEW)
 # ------------------------------------------------------------
 st.markdown("---")
-st.markdown("#### 🏆 Top Suppliers by Amount")
+st.markdown("#### 🏢 Supplier-wise Item Report")
 
 if fdf.empty:
-    st.info("No data.")
+    st.info("No data available for the selected filters.")
 else:
-    top = (
-        fdf.groupby("Party name", dropna=False)
-           .agg(
-               Purchases=("Purchase ID", "count"),
-               Qty=("Qty", "sum"),
-               Amount=("Total amount", "sum"),
-           )
-           .sort_values("Amount", ascending=False)
-           .head(10)
-           .reset_index()
-    )
-    top["Qty"] = top["Qty"].round(2)
-    top["Amount"] = top["Amount"].round(2)
-    st.dataframe(
-        top.style.format({"Qty": "{:,.2f}", "Amount": "₹ {:,.2f}"}, na_rep=""),
-        use_container_width=True,
-        hide_index=True,
-    )
+    # 1. Merge purchase_items with the filtered purchases to get only relevant rows
+    # We match based on Purchase ID
+    merged_df = pd.merge(items_df, fdf[["Purchase ID"]], on="Purchase ID", how="inner")
+    
+    # 2. For single-item purchases (which might not be in purchase_items yet), 
+    #    create dummy rows from the purchase header itself
+    single_items = fdf[~fdf["Purchase ID"].isin(merged_df["Purchase ID"])].copy()
+    if not single_items.empty:
+        # We use the header info for these
+        single_items = single_items.rename(columns={"Party name": "Party Name", "Item": "Item Name"})
+        single_df = single_items[["Purchase ID", "Party Name", "Item Name", "Qty", "Moisture %", "Total amount"]]
+        
+        # Merge existing line items with the new single items
+        merged_df = merged_df.rename(columns={"Party name": "Party Name", "Item": "Item Name"})
+        # Ensure all columns align
+        merged_df = merged_df[["Purchase ID", "Party Name", "Item Name", "Qty", "Moisture %", "Amount"]]
+        merged_df = pd.concat([merged_df, single_df.rename(columns={"Total amount": "Amount"})], ignore_index=True)
+    else:
+        merged_df = merged_df.rename(columns={"Party name": "Party Name", "Item": "Item Name", "Amount": "Amount"})
+
+    # Clean numeric columns
+    for col in ["Qty", "Moisture %", "Amount"]:
+        merged_df[col] = pd.to_numeric(merged_df[col], errors="coerce").fillna(0)
+
+    if merged_df.empty:
+        st.info("No item data found for these purchases.")
+    else:
+        # Group by Supplier and Item
+        supp_rows = []
+        for (party, item), group in merged_df.groupby(["Party Name", "Item Name"]):
+            if not party or party == "None":
+                continue
+                
+            t_qty = group["Qty"].sum()
+            t_amt = group["Amount"].sum()
+            
+            # Weighted average moisture
+            w_moisture = (group["Moisture %"] * group["Qty"]).sum() / t_qty if t_qty > 0 else 0
+            
+            # Net Qty after moisture
+            net_qty = t_qty * (1 - (w_moisture / 100))
+            
+            # Average per kg based on Net Qty
+            avg_per_kg = (t_amt / net_qty) if net_qty > 0 else 0
+
+            supp_rows.append({
+                "Supplier Name": party,
+                "Item Purchased": item,
+                "Qty": t_qty,
+                "Average Moist %": w_moisture,
+                "Net Qty (After Moist)": net_qty,
+                "Total Amount": t_amt,
+                "Avg / KG (Net Qty)": avg_per_kg
+            })
+
+        if supp_rows:
+            supp_df = pd.DataFrame(supp_rows)
+            
+            # Sort by Supplier Name, then by Total Amount
+            supp_df = supp_df.sort_values(["Supplier Name", "Total Amount"], ascending=[True, False])
+            
+            # Display
+            st.dataframe(
+                supp_df.style.format({
+                    "Qty": "{:,.2f}",
+                    "Average Moist %": "{:.2f}%",
+                    "Net Qty (After Moist)": "{:,.2f}",
+                    "Total Amount": "₹ {:,.2f}",
+                    "Avg / KG (Net Qty)": "₹ {:,.2f}"
+                }, na_rep=""),
+                use_container_width=True,
+                hide_index=True
+            )
+        else:
+            st.info("No Supplier data available.")
 
 # ------------------------------------------------------------
 # 5h. RECENT PURCHASES
