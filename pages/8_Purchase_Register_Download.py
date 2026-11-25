@@ -3,89 +3,71 @@ import pandas as pd
 from datetime import date
 import io
 
-# Adjust this import to match your project (core.sheets_db is what your repo shows)
 from core import sheets_db
+from core import auth
 
-st.set_page_config(page_title="Purchase Register — Download", page_icon="⬇️", layout="wide")
+# Match the pattern of your other pages
+auth.require_login()
+
 st.title("⬇️ Purchase Register — Filter & Download")
 
 # ------------------------------------------------------------
-# 1. LOAD THE PURCHASES SHEET (tab name = "purchases")
+# 1. LOAD DATA using YOUR existing helper
 # ------------------------------------------------------------
 @st.cache_data(ttl=300, show_spinner="Loading purchases…")
-def load_purchases() -> pd.DataFrame:
-    # 👇 Replace `read_sheet("purchases")` with your real reader function if named differently.
-    # Common patterns in sheets_db.py:
-    #   read_sheet("purchases") / get_sheet("purchases") / read_purchases()
-    if hasattr(sheets_db, "read_sheet"):
-        df = sheets_db.read_sheet("purchases")
-    elif hasattr(sheets_db, "get_sheet"):
-        df = sheets_db.get_sheet("purchases")
-    elif hasattr(sheets_db, "read_purchases"):
-        df = sheets_db.read_purchases()
-    else:
-        raise RuntimeError(
-            "No known reader found in core.sheets_db. "
-            "Add one of: read_sheet('purchases'), get_sheet('purchases'), read_purchases()."
-        )
-    return df
+def load_purchases():
+    return sheets_db.list_all("purchases")
 
 try:
-    df = load_purchases()
+    rows = load_purchases()
 except Exception as e:
     st.error(f"Failed to load purchases: {e}")
     st.stop()
 
-if df is None or df.empty:
-    st.warning("The `purchases` tab is empty.")
+if not rows:
+    st.info("No purchases recorded yet.")
     st.stop()
 
+df = pd.DataFrame(rows)
+
 # ------------------------------------------------------------
-# 2. CLEAN TYPES (safe even if already correct)
+# 2. TYPE CLEANUP
+#    Date is a string like "2026-11-11 00:00:00" from Sheets
 # ------------------------------------------------------------
-# Date -> datetime
 df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
-
-# Year came as 2026.0 -> make it a clean int for display (keep original column too)
-if "Year" in df.columns:
-    df["Year"] = pd.to_numeric(df["Year"], errors="coerce")
-
-# Farm Name -> string, strip spaces, keep blanks as "(blank)"
+df["Year"] = pd.to_numeric(df.get("Year"), errors="coerce")
 df["Farm Name"] = df["Farm Name"].astype("string").str.strip()
 
 # ------------------------------------------------------------
-# 3. FILTERS: Farm name + Period (Month/Year  OR  Date range)
+# 3. FILTERS — Farm name + Period (Month+Year or Date range)
 # ------------------------------------------------------------
 st.subheader("Filters")
-
 f1, f2, f3 = st.columns([2, 2, 2])
 
-# ---- Farm name ----
-farm_values = (
-    df["Farm Name"].dropna().unique().tolist()
+# ---- Farm name (handle blanks the sheet actually has) ----
+farm_vals = sorted(
+    [v for v in df["Farm Name"].dropna().unique().tolist() if v not in ("", "None")]
 )
-farm_values = sorted([v for v in farm_values if v not in ("", "None")])
-if (df["Farm Name"].isna() | (df["Farm Name"] == "")).any():
-    farm_values.append("(blank)")
+has_blank = (df["Farm Name"].isna() | (df["Farm Name"] == "")).any()
+farm_options = farm_vals + (["(blank)"] if has_blank else [])
 
 with f1:
     selected_farms = st.multiselect(
         "Farm name",
-        options=farm_values,
-        default=farm_values,
-        help="Leave all selected to include every farm, including blanks.",
+        options=farm_options,
+        default=farm_options,
+        help="Leave all selected to include every farm.",
     )
 
-# ---- Period: choose mode ----
+# ---- Period mode ----
 with f2:
     period_mode = st.radio(
         "Period filter by",
-        options=["Month + Year", "Date range"],
+        ["Month + Year", "Date range"],
         horizontal=True,
     )
 
 if period_mode == "Month + Year":
-    # Build available (Year, Month) pairs from data
     pairs = (
         df.dropna(subset=["Date"])
           .assign(_y=df["Date"].dt.year, _m=df["Date"].dt.month)
@@ -93,21 +75,17 @@ if period_mode == "Month + Year":
           .drop_duplicates()
           .sort_values(["_y", "_m"])
     )
-    pair_labels = [f"{y}-{m:02d}" for y, m in pairs.itertuples(index=False)]
+    period_labels = [f"{int(y)}-{int(m):02d}" for y, m in pairs.itertuples(index=False)]
 
     with f3:
         selected_periods = st.multiselect(
-            "Period (YYYY-MM)",
-            options=pair_labels,
-            default=pair_labels,
-            help="Pick one or more months.",
+            "Period (YYYY-MM)", options=period_labels, default=period_labels
         )
 
-    # Apply
     df["_period"] = df["Date"].dt.strftime("%Y-%m")
     mask_period = df["_period"].isin(selected_periods)
 
-else:
+else:  # Date range
     min_d = df["Date"].min().date()
     max_d = df["Date"].max().date()
     today = date.today()
@@ -126,16 +104,13 @@ else:
 
     mask_period = (df["Date"].dt.date >= start_date) & (df["Date"].dt.date <= end_date)
 
-# ---- Farm mask (handle blanks) ----
+# ---- Farm mask (include blanks if chosen) ----
 include_blank = "(blank)" in selected_farms
 mask_farm = df["Farm Name"].isin([f for f in selected_farms if f != "(blank)"])
 if include_blank:
     mask_farm |= df["Farm Name"].isna() | (df["Farm Name"] == "")
 
-# ---- Combine ----
 filtered = df.loc[mask_farm & mask_period].copy()
-
-# Drop helper col before display/download
 filtered = filtered.drop(columns=["_period"], errors="ignore")
 
 st.caption(
@@ -144,23 +119,22 @@ st.caption(
 )
 
 # ------------------------------------------------------------
-# 4. PREVIEW — ALL HEADERS
+# 4. PREVIEW — all headers
 # ------------------------------------------------------------
 st.subheader("Preview")
 st.dataframe(filtered, use_container_width=True, hide_index=True, height=420)
 
 # ------------------------------------------------------------
-# 5. DOWNLOAD (Excel + CSV)
+# 5. DOWNLOAD
 # ------------------------------------------------------------
 st.subheader("Download")
 
-def to_excel(df: pd.DataFrame) -> bytes:
+def to_excel(d: pd.DataFrame) -> bytes:
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as w:
-        df.to_excel(w, index=False, sheet_name="Purchase Register")
+        d.to_excel(w, index=False, sheet_name="Purchase Register")
     return buf.getvalue()
 
-# Filename reflects the filter mode
 if period_mode == "Month + Year":
     label = "_".join(selected_periods) if selected_periods else "none"
 else:
@@ -188,4 +162,4 @@ with c2:
     )
 
 if filtered.empty:
-    st.info("No rows match the current filters — downloads are disabled.")
+    st.info("No rows match the current filters — downloads disabled.")
