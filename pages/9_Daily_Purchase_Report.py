@@ -1,3 +1,224 @@
+import streamlit as st
+import pandas as pd
+from datetime import date
+import io
+
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import A4, landscape
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import mm
+from reportlab.platypus import (
+    SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+)
+
+from core import sheets_db
+from core import auth
+
+auth.require_login()
+
+st.title("📅 Daily Purchase Report")
+
+if st.button("🔄 Refresh data"):
+    st.cache_data.clear()
+    st.rerun()
+
+# ------------------------------------------------------------
+# 1. LOAD DATA
+# ------------------------------------------------------------
+@st.cache_data(ttl=300, show_spinner="Loading…")
+def load_data():
+    return (
+        sheets_db.list_all("purchases"),
+        sheets_db.list_all("purchase_items"),
+    )
+
+try:
+    purchase_rows, item_rows = load_data()
+except Exception as e:
+    st.error(f"Failed to load data: {e}")
+    st.stop()
+
+if not purchase_rows:
+    st.info("No purchases recorded yet.")
+    st.stop()
+
+purch_df = pd.DataFrame(purchase_rows)
+items_df = (
+    pd.DataFrame(item_rows)
+    if item_rows
+    else pd.DataFrame(columns=["Purchase ID", "Item", "Qty", "Moisture %", "Amount"])
+)
+
+purch_df["Date"] = pd.to_datetime(purch_df["Date"], errors="coerce")
+purch_df["Farm Name"] = purch_df["Farm Name"].astype("string").str.strip()
+
+# ------------------------------------------------------------
+# 2. FILTERS — Date + Farm
+# ------------------------------------------------------------
+st.subheader("Filters")
+f1, f2 = st.columns(2)
+
+with f1:
+    report_date = st.date_input("Date", value=date.today())
+
+farm_vals = sorted(
+    [v for v in purch_df["Farm Name"].dropna().unique().tolist() if v not in ("", "None")]
+)
+with f2:
+    selected_farm = st.selectbox("Farm", ["All"] + farm_vals)
+
+# ------------------------------------------------------------
+# 3. EXPLODE INTO (purchase × item) LONG FORM
+# ------------------------------------------------------------
+def explode_purchases(purch: pd.DataFrame, items: pd.DataFrame) -> pd.DataFrame:
+    items = items.copy()
+    if "Purchase ID" not in items.columns:
+        items["Purchase ID"] = ""
+    items["Purchase ID"] = items["Purchase ID"].astype(str).str.strip()
+
+    linked_ids = set(items.loc[items["Purchase ID"] != "", "Purchase ID"].unique())
+
+    rows = []
+    for _, p in purch.iterrows():
+        pid = str(p["Purchase ID"]).strip()
+        header_item = str(p.get("Item", "") or "").strip()
+
+        if pid in linked_ids:
+            sub = items[items["Purchase ID"] == pid]
+            for _, li in sub.iterrows():
+                rows.append({
+                    "Purchase ID": pid,
+                    "Date": p["Date"],
+                    "Farm Name": p.get("Farm Name", ""),
+                    "Party name": p.get("Party name", ""),
+                    "Item": str(li.get("Item", "")).strip(),
+                    "Qty": pd.to_numeric(li.get("Qty"), errors="coerce"),
+                    "Moisture %": pd.to_numeric(li.get("Moisture %"), errors="coerce"),
+                    "Amount": pd.to_numeric(li.get("Amount"), errors="coerce"),
+                })
+        else:
+            if header_item and header_item.lower() not in ("", "multiple items"):
+                rows.append({
+                    "Purchase ID": pid,
+                    "Date": p["Date"],
+                    "Farm Name": p.get("Farm Name", ""),
+                    "Party name": p.get("Party name", ""),
+                    "Item": header_item,
+                    "Qty": pd.to_numeric(p.get("Qty"), errors="coerce"),
+                    "Moisture %": pd.to_numeric(p.get("Moisture %"), errors="coerce"),
+                    "Amount": pd.to_numeric(p.get("Amount"), errors="coerce"),
+                })
+
+    return pd.DataFrame(rows)
+
+
+long_df = explode_purchases(purch_df, items_df)
+
+if long_df.empty:
+    st.warning("No item data available.")
+    st.stop()
+
+# ------------------------------------------------------------
+# 4. APPLY FILTERS
+# ------------------------------------------------------------
+mask = long_df["Date"].dt.date == report_date
+if selected_farm != "All":
+    mask &= long_df["Farm Name"] == selected_farm
+
+day_df = long_df.loc[mask].copy()
+
+if day_df.empty:
+    st.warning(f"No purchases found for {report_date} / farm = {selected_farm}.")
+    st.stop()
+
+# ------------------------------------------------------------
+# 5. ITEM SUMMARY
+# ------------------------------------------------------------
+st.subheader("📦 Item Summary")
+
+item_qty = day_df.groupby("Item", dropna=False)["Qty"].sum()
+item_amt = day_df.groupby("Item", dropna=False)["Amount"].sum()
+
+summary_rows = []
+for item in sorted(day_df["Item"].dropna().unique().tolist()):
+    summary_rows.append({
+        "Item": item,
+        "Qty (Kgs)": float(item_qty.get(item, 0.0) or 0.0),
+        "Amount (₹)": float(item_amt.get(item, 0.0) or 0.0),
+    })
+
+total_qty = sum(r["Qty (Kgs)"] for r in summary_rows)
+total_amt = float(day_df["Amount"].sum())
+summary_rows.append({"Item": "TOTAL", "Qty (Kgs)": total_qty, "Amount (₹)": total_amt})
+summary_df = pd.DataFrame(summary_rows)
+
+st.dataframe(
+    summary_df.style.format({"Qty (Kgs)": "{:,.2f}", "Amount (₹)": "{:,.2f}"}),
+    use_container_width=True,
+    hide_index=True,
+)
+
+# ------------------------------------------------------------
+# 6. PURCHASE LIST (dynamic item columns)
+# ------------------------------------------------------------
+st.subheader("📋 List of Purchases")
+
+pivot = (
+    day_df.pivot_table(
+        index="Party name",
+        columns="Item",
+        values="Qty",
+        aggfunc="sum",
+        fill_value=0,
+    ).reset_index()
+)
+
+item_cols = sorted([c for c in pivot.columns if c != "Party name"])
+pivot = pivot[["Party name"] + item_cols]
+
+def weighted_moisture(g: pd.DataFrame) -> float:
+    q = g["Qty"].fillna(0)
+    m = g["Moisture %"].fillna(0)
+    tq = q.sum()
+    return float((q * m).sum() / tq) if tq > 0 else 0.0
+
+moisture_by_party = (
+    day_df.groupby("Party name", dropna=False).apply(weighted_moisture).to_dict()
+)
+total_qty_by_party = day_df.groupby("Party name", dropna=False)["Qty"].sum().to_dict()
+amount_by_party = day_df.groupby("Party name", dropna=False)["Amount"].sum().to_dict()
+
+rename = {c: f"{c} (Kgs)" for c in item_cols}
+pivot = pivot.rename(columns=rename)
+
+pivot.insert(1, "Moisture %", [round(moisture_by_party.get(p, 0.0), 2) for p in pivot["Party name"]])
+pivot["Total (Kgs)"] = [float(total_qty_by_party.get(p, 0.0) or 0.0) for p in pivot["Party name"]]
+pivot["Amount (₹)"] = [float(amount_by_party.get(p, 0.0) or 0.0) for p in pivot["Party name"]]
+pivot.insert(0, "S.No", range(1, len(pivot) + 1))
+
+total_row = {"S.No": "", "Party name": "TOTAL", "Moisture %": ""}
+for c in [c for c in pivot.columns if c not in ("S.No", "Party name", "Moisture %")]:
+    total_row[c] = float(pivot[c].sum())
+pivot = pd.concat([pivot, pd.DataFrame([total_row])], ignore_index=True)
+
+fmt = {"Moisture %": "{:,.2f}"}
+for c in pivot.columns:
+    if c.endswith("(Kgs)") or c.endswith("(₹)"):
+        fmt[c] = "{:,.2f}"
+
+st.dataframe(
+    pivot.style.format(fmt, na_rep=""),
+    use_container_width=True,
+    hide_index=True,
+)
+
+# ------------------------------------------------------------
+# 7. PDF BUILDER
+#    - All columns always fit on ONE page width (auto-shrink font/width)
+#    - Rows paginate to extra pages if needed (header repeats)
+# ------------------------------------------------------------
+farm_label = "All Farms" if selected_farm == "All" else selected_farm
+
 def build_pdf() -> bytes:
     buf = io.BytesIO()
     page = landscape(A4)
@@ -32,7 +253,7 @@ def build_pdf() -> bytes:
     story.append(Paragraph(f"Dated: <b>{report_date.strftime('%d/%m/%Y')}</b>", h_sub))
     story.append(Spacer(1, 6))
 
-    # --- Item Summary table (small, fixed 4 cols) ---
+    # --- Item Summary table ---
     story.append(Paragraph("Item Summary", h_section))
     sum_data = [["Item", "Qty (Kgs)", "Unit", "Amount (Rs)"]]
     for _, r in summary_df.iterrows():
@@ -79,7 +300,7 @@ def build_pdf() -> bytes:
 
     header_fs = min(base_fs + 0.5, 9)
 
-    # Column width weights (S.No narrow, Party wide, Amount wide, others equal)
+    # Column width weights
     weights = []
     for h in headers:
         if h == "S.No":              weights.append(0.5)
@@ -92,20 +313,21 @@ def build_pdf() -> bytes:
     total_w = sum(weights)
     col_widths = [printable_w * w / total_w for w in weights]
 
-    # Build data rows with formatted strings
+    # Build data rows
+    cell_style = ParagraphStyle(
+        "cell", fontSize=base_fs, leading=base_fs + 1.5, wordWrap="CJK"
+    )
+
     data = [headers]
     for _, r in pivot.iterrows():
         row = []
         for h in headers:
             v = r[h]
-            if h in ("S.No",):
+            if h == "S.No":
                 row.append(str(v) if pd.notna(v) and str(v) != "" else "")
             elif h == "Party name":
-                # wrap long party names
                 txt = str(v) if pd.notna(v) else ""
-                row.append(Paragraph(txt, ParagraphStyle(
-                    "cell", fontSize=base_fs, leading=base_fs + 1.5, wordWrap="CJK"
-                )))
+                row.append(Paragraph(txt, cell_style))
             elif h == "Moisture %":
                 row.append(f"{float(v):,.2f}" if pd.notna(v) and str(v) != "" else "")
             else:
@@ -122,18 +344,17 @@ def build_pdf() -> bytes:
     style = [
         ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#E8EEF7")),
         ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-        ("FONTSIZE", (0, 0), (-1, 0), header_fs),       # header font
-        ("FONTSIZE", (0, 1), (-1, -1), base_fs),        # body font
+        ("FONTSIZE", (0, 0), (-1, 0), header_fs),
+        ("FONTSIZE", (0, 1), (-1, -1), base_fs),
         ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
         ("LEFTPADDING", (0, 0), (-1, -1), 2),
         ("RIGHTPADDING", (0, 0), (-1, -1), 2),
         ("TOPPADDING", (0, 0), (-1, -1), 2),
         ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
-        ("ALIGN", (0, 1), (0, -1), "CENTER"),     # S.No
-        ("ALIGN", (1, 1), (1, -1), "LEFT"),       # Party
-        ("ALIGN", (2, 1), (-1, -1), "RIGHT"),     # numeric
-        # Bold TOTAL row
+        ("ALIGN", (0, 1), (0, -1), "CENTER"),
+        ("ALIGN", (1, 1), (1, -1), "LEFT"),
+        ("ALIGN", (2, 1), (-1, -1), "RIGHT"),
         ("FONTNAME", (0, -1), (-1, -1), "Helvetica-Bold"),
         ("BACKGROUND", (0, -1), (-1, -1), colors.HexColor("#F4F4F4")),
     ]
@@ -153,3 +374,25 @@ def build_pdf() -> bytes:
 
     doc.build(story)
     return buf.getvalue()
+
+
+# ------------------------------------------------------------
+# 8. DOWNLOAD BUTTONS
+# ------------------------------------------------------------
+st.subheader("⬇️ Download")
+
+st.download_button(
+    "⬇️ Download PDF",
+    data=build_pdf(),
+    file_name=f"daily_purchase_{report_date.strftime('%Y%m%d')}_{farm_label.replace(' ', '_')}.pdf",
+    mime="application/pdf",
+    use_container_width=True,
+)
+
+st.download_button(
+    "⬇️ Download CSV (raw rows)",
+    data=day_df.to_csv(index=False).encode("utf-8-sig"),
+    file_name=f"daily_purchase_raw_{report_date.strftime('%Y%m%d')}.csv",
+    mime="text/csv",
+    use_container_width=True,
+)
