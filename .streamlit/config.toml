@@ -6,7 +6,7 @@ textColor = "#262730"
 font = "sans serif"
 
 [client]
-toolbarMode = "minimal"
+toolbarMode = "developer"  # <--- Change "minimal" to "developer"
 
 [server]
 enableXsrfProtection = true
