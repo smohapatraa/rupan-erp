@@ -28,8 +28,7 @@ if st.session_state["user"] is None:
                 st.image("logo.png", use_container_width=True) 
         except:
             pass 
-            
-        st.markdown("<h1 style='text-align: center; color: #1e5631; margin-bottom: 0;'>Rupan Renewables</h1>", unsafe_allow_html=True)
+        
         st.markdown("<p style='text-align: center; color: #666; font-size: 1.1em; margin-top: 5px;'>Sustainable Energy Solutions for a Greener Tomorrow</p>", unsafe_allow_html=True)
         
         st.write("") 
