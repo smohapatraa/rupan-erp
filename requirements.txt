@@ -7,3 +7,4 @@ pandas
 streamlit-authenticator
 bcrypt
 tenacity==9.0.0
+openpyxl
