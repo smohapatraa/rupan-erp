@@ -9,8 +9,19 @@ st.set_page_config(
     page_title="Rupan Renewables ERP",
     page_icon="🌱",
     layout="wide",
-    initial_sidebar_state="expanded"  # <--- Forces the sidebar to open
+    initial_sidebar_state="expanded"
 )
+
+# ------------------------------------------------------------
+# SAFE CSS: Hide Fork/GitHub & Footer (Keeps Sidebar Safe)
+# ------------------------------------------------------------
+st.markdown("""
+<style>
+    .stApp [data-testid="stToolbar"] {visibility: hidden;}
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+</style>
+""", unsafe_allow_html=True)
 
 # 2. Initialize Session State
 if "user" not in st.session_state:
@@ -21,13 +32,14 @@ if st.session_state["user"] is None:
     col1, col2, col3 = st.columns([1, 2, 1])
     
     with col2:
-        # --- LOGO & BRANDING ---
         try:
             logo_col1, logo_col2, logo_col3 = st.columns([1, 2, 1])
             with logo_col2:
                 st.image("logo.png", use_container_width=True) 
         except:
             pass 
+            
+        st.markdown("<h1 style='text-align: center; color: #1e5631; margin-bottom: 0;'>Rupan Renewables</h1>", unsafe_allow_html=True)
         st.markdown("<p style='text-align: center; color: #666; font-size: 1.1em; margin-top: 5px;'>Sustainable Energy Solutions for a Greener Tomorrow</p>", unsafe_allow_html=True)
         
         st.write("") 
@@ -115,7 +127,14 @@ df["Amount"] = pd.to_numeric(df["Amount"], errors="coerce")
 df["Qty"] = pd.to_numeric(df["Qty"], errors="coerce")
 df["Year"] = pd.to_numeric(df["Year"], errors="coerce")
 df["Month"] = df["Month"].astype("string").str.strip()
+# Ensure Employee columns exist
+df["Employee Name"] = df.get("Employee Name", "Unknown").fillna("Unknown")
+df["Moisture %"] = pd.to_numeric(df.get("Moisture %"), errors="coerce").fillna(0)
+df["Transportation Amount"] = pd.to_numeric(df.get("Transportation Amount"), errors="coerce").fillna(0)
 
+# ------------------------------------------------------------
+# 5b. FILTERS — Farm + Month/Year
+# ------------------------------------------------------------
 st.markdown("### 🎯 Filters")
 f1, f2, f3, f4 = st.columns([2, 2, 1.5, 1.5])
 
@@ -149,6 +168,9 @@ if date_mode == "Use Date range":
     start_date = st.date_input("From", value=default_start, min_value=min_d, max_value=max_d)
     end_date = st.date_input("To", value=default_end, min_value=min_d, max_value=max_d)
 
+# ------------------------------------------------------------
+# 5c. APPLY FILTERS
+# ------------------------------------------------------------
 mask = df["Farm Name"].notna()
 include_blank = "(blank)" in selected_farms
 farm_mask = df["Farm Name"].isin([f for f in selected_farms if f != "(blank)"])
@@ -166,6 +188,9 @@ else:
 
 fdf = df.loc[mask].copy()
 
+# ------------------------------------------------------------
+# 5d. KPI CARDS
+# ------------------------------------------------------------
 st.markdown("---")
 k1, k2, k3, k4, k5 = st.columns(5)
 total_rows = len(fdf)
@@ -180,6 +205,9 @@ with k3: st.metric("📦 Total Qty", f"{total_qty:,.0f}")
 with k4: st.metric("🏞️ Active Farms", f"{total_farms}")
 with k5: st.metric("🤝 Suppliers", f"{total_parties}")
 
+# ------------------------------------------------------------
+# 5e. TREND + FARM BREAKDOWN
+# ------------------------------------------------------------
 st.markdown("---")
 chart_col, breakdown_col = st.columns([2, 1])
 
@@ -191,6 +219,7 @@ with chart_col:
     else:
         recent_trend = trend.sort_values("Date", ascending=True).tail(10)
         recent_trend["_label"] = recent_trend["Date"].dt.strftime("%d-%b") + " (" + recent_trend["Purchase ID"].str[-3:] + ")"
+        
         st.bar_chart(
             recent_trend.set_index("_label")["Total amount"],
             use_container_width=True,
@@ -201,6 +230,7 @@ with chart_col:
 with breakdown_col:
     st.markdown("#### 🏞️ Breakdown")
     toggle = st.radio("Group by:", ["Farm", "Month"], horizontal=True, label_visibility="collapsed")
+    
     if fdf.empty:
         st.info("No data.")
     else:
@@ -217,6 +247,7 @@ with breakdown_col:
                .reset_index()
                .rename(columns={"_group": "Category", "Total amount": "Amount"})
         )
+        
         st.bar_chart(
             bdf.set_index("Category")["Amount"],
             use_container_width=True,
@@ -224,28 +255,102 @@ with breakdown_col:
             color="#ff9800"
         )
 
+# ------------------------------------------------------------
+# 5f. EMPLOYEE PERFORMANCE REPORT (NEW)
+# ------------------------------------------------------------
 st.markdown("---")
-st.markdown("#### 🏆 Top Suppliers by Amount")
-if fdf.empty:
-    st.info("No data.")
-else:
-    top = (
-        fdf.groupby("Party name", dropna=False)
-           .agg(Purchases=("Purchase ID", "count"), Qty=("Qty", "sum"), Amount=("Total amount", "sum"))
-           .sort_values("Amount", ascending=False)
-           .head(10)
-           .reset_index()
-    )
-    top["Qty"] = top["Qty"].round(2)
-    top["Amount"] = top["Amount"].round(2)
-    st.dataframe(
-        top.style.format({"Qty": "{:,.2f}", "Amount": "₹ {:,.2f}"}, na_rep=""),
-        use_container_width=True,
-        hide_index=True,
-    )
+st.markdown("#### 👷 Employee Performance Report")
 
+if fdf.empty:
+    st.info("No data available for the selected filters.")
+else:
+    # We group by Employee Name and calculate the weighted metrics
+    emp_rows = []
+    
+    for emp_name, group in fdf.groupby("Employee Name"):
+        if not emp_name or emp_name == "None" or emp_name == "Unknown":
+            continue
+            
+        t_qty = group["Qty"].sum()
+        t_amt = group["Total amount"].sum()
+        t_frt = group["Transportation Amount"].sum()
+        
+        # Weighted moisture: sum(moisture * qty) / total_qty
+        w_moisture = (group["Moisture %"] * group["Qty"]).sum() / t_qty if t_qty > 0 else 0
+        
+        # Convert to Tonnes
+        qty_tonne = t_qty / 1000.0
+        
+        # Metric Calculations
+        avg_cost_kg = (t_amt / t_qty) if t_qty > 0 else 0
+        frt_per_kg = (t_frt / t_qty) if t_qty > 0 else 0
+        total_cost_kg = avg_cost_kg + frt_per_kg
+        
+        # W/O Moisture = Total Cost / (1 - Moisture Fraction)
+        if w_moisture < 100:
+            total_cost_wo_moist = total_cost_kg / (1 - (w_moisture / 100))
+        else:
+            total_cost_wo_moist = 0
+
+        emp_rows.append({
+            "EMPLOYEE": emp_name,
+            "Qty(Tonne)": qty_tonne,
+            "Moist %": w_moisture,
+            "AVG COST KG": avg_cost_kg,
+            "FRT PER KG": frt_per_kg,
+            "TOTAL COST PER KG": total_cost_kg,
+            "TOTAL COST / KG W/O MOISTURE": total_cost_wo_moist
+        })
+
+    if emp_rows:
+        emp_df = pd.DataFrame(emp_rows)
+        
+        # Calculate Totals Row
+        tot_qty = emp_df["Qty(Tonne)"].sum()
+        # Calculate overall weighted averages for the total row
+        tot_amt = fdf["Total amount"].sum()
+        tot_frt = fdf["Transportation Amount"].sum()
+        tot_moist = (fdf["Moisture %"] * fdf["Qty"]).sum() / fdf["Qty"].sum() if fdf["Qty"].sum() > 0 else 0
+        
+        tot_avg_cost = (tot_amt / fdf["Qty"].sum()) if fdf["Qty"].sum() > 0 else 0
+        tot_frt = (tot_frt / fdf["Qty"].sum()) if fdf["Qty"].sum() > 0 else 0
+        tot_total_cost = tot_avg_cost + tot_frt
+        tot_wo_moist = tot_total_cost / (1 - (tot_moist / 100)) if tot_moist < 100 else 0
+
+        total_row_df = pd.DataFrame([{
+            "EMPLOYEE": "TOTAL",
+            "Qty(Tonne)": tot_qty,
+            "Moist %": tot_moist,
+            "AVG COST KG": tot_avg_cost,
+            "FRT PER KG": tot_frt,
+            "TOTAL COST PER KG": tot_total_cost,
+            "TOTAL COST / KG W/O MOISTURE": tot_wo_moist
+        }])
+        
+        emp_df = pd.concat([emp_df, total_row_df], ignore_index=True)
+        
+        # Format the display
+        st.dataframe(
+            emp_df.style.format({
+                "Qty(Tonne)": "{:,.2f}",
+                "Moist %": "{:.2f}%",
+                "AVG COST KG": "{:.2f}",
+                "FRT PER KG": "{:.2f}",
+                "TOTAL COST PER KG": "{:.2f}",
+                "TOTAL COST / KG W/O MOISTURE": "{:.2f}"
+            }, na_rep=""),
+            use_container_width=True,
+            hide_index=True
+        )
+    else:
+        st.info("No Employee data available.")
+
+# ------------------------------------------------------------
+# 5g. RECENT PURCHASES
+# ------------------------------------------------------------
 st.markdown("---")
 st.markdown("#### 🕒 Recent Purchases")
+
 if fdf.empty:
     st.info("No data.")
 else:
@@ -260,6 +365,9 @@ else:
         hide_index=True,
     )
 
+# ------------------------------------------------------------
+# 5h. SYSTEM STATUS
+# ------------------------------------------------------------
 with st.expander("⚙️ System Status"):
     try:
         if st.button("Run DB Healthcheck"):
