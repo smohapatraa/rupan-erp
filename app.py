@@ -6,11 +6,45 @@ from core import sheets_db
 
 # 1. Page Configuration
 st.set_page_config(
-    page_title="Rupan ERP",
-    page_icon="🌾",
+    page_title="Rupan Renewables ERP",
+    page_icon="🌱",
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+# ------------------------------------------------------------
+# CUSTOM BRANDING & CSS
+# ------------------------------------------------------------
+# Brand-matched SVG: Green leaf (sustainability) + Orange Sun (energy)
+LOGO_SVG = """
+<svg width="80" height="80" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+  <circle cx="50" cy="50" r="48" fill="#f4fbf4" stroke="#2e7d32" stroke-width="2"/>
+  <path d="M 30 70 Q 50 40 70 70" fill="none" stroke="#2e7d32" stroke-width="6" stroke-linecap="round"/>
+  <path d="M 50 70 Q 50 45 50 30" fill="none" stroke="#2e7d32" stroke-width="4" stroke-linecap="round"/>
+  <circle cx="50" cy="28" r="8" fill="#ff9800"/>
+  <path d="M 50 15 L 50 18 M 50 38 L 50 41 M 37 28 L 40 28 M 60 28 L 63 28" stroke="#ff9800" stroke-width="2.5" stroke-linecap="round"/>
+</svg>
+"""
+
+st.markdown("""
+<style>
+    /* Main layout tweaks */
+    .block-container { padding-top: 2rem; }
+    
+    /* Login box styling */
+    .login-container {
+        background-color: #ffffff;
+        padding: 2rem;
+        border-radius: 12px;
+        box-shadow: 0 10px 20px rgba(0,0,0,0.05);
+        border-top: 6px solid #2e7d32;
+    }
+    
+    /* Hide default streamlit menu and footer */
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+</style>
+""", unsafe_allow_html=True)
 
 # 2. Initialize Session State
 if "user" not in st.session_state:
@@ -19,49 +53,62 @@ if "user" not in st.session_state:
 # 3. Login Screen
 if st.session_state["user"] is None:
     col1, col2, col3 = st.columns([1, 2, 1])
-
+    
     with col2:
-        st.markdown("<h1 style='text-align: center;'>Rupan ERP</h1>", unsafe_allow_html=True)
-        st.markdown("<p style='text-align: center;'>Purchase Management System</p>", unsafe_allow_html=True)
-        st.divider()
-
-        with st.form("login_form"):
-            st.subheader("Login")
-            username = st.text_input("Username", placeholder="Enter username")
-            password = st.text_input("Password", type="password", placeholder="Enter password")
-            submit = st.form_submit_button("Sign In", use_container_width=True)
-
-            if submit:
-                if not username or not password:
-                    st.error("Please enter both username and password.")
-                else:
-                    with st.spinner("Authenticating..."):
-                        user = auth.login(username, password)
-                        if user:
-                            st.session_state["user"] = user
-                            st.rerun()
-                        else:
-                            st.error("Invalid username or password, or account is inactive.")
-
+        # Branding Header
+        st.markdown(f"<div style='text-align: center; margin-bottom: 20px;'>{LOGO_SVG}</div>", unsafe_allow_html=True)
+        st.markdown("<h1 style='text-align: center; color: #1e5631; margin-bottom: 0;'>Rupan Renewables</h1>", unsafe_allow_html=True)
+        st.markdown("<p style='text-align: center; color: #666; font-size: 1.1em; margin-top: 5px;'>Sustainable Energy Solutions for a Greener Tomorrow</p>", unsafe_allow_html=True)
+        
+        st.write("") # spacer
+        
+        # Login Form inside a styled container
+        with st.container():
+            st.markdown('<div class="login-container">', unsafe_allow_html=True)
+            with st.form("login_form"):
+                st.subheader("🔐 Enterprise Login")
+                username = st.text_input("Username", placeholder="Enter username")
+                password = st.text_input("Password", type="password", placeholder="Enter password")
+                submit = st.form_submit_button("Sign In", use_container_width=True, type="primary")
+                
+                if submit:
+                    if not username or not password:
+                        st.error("Please enter both username and password.")
+                    else:
+                        with st.spinner("Authenticating..."):
+                            user = auth.login(username, password)
+                            if user:
+                                st.session_state["user"] = user
+                                st.rerun()
+                            else:
+                                st.error("Invalid username or password, or account is inactive.")
+            st.markdown('</div>', unsafe_allow_html=True)
+                            
     st.stop()
 
-# 4. Logged in
+# 4. Logged in - Sidebar setup
 user = st.session_state["user"]
 
 with st.sidebar:
-    st.title("🌾 Rupan ERP")
-    st.write(f"Logged in as: **{user.get('Username')}**")
-    st.write(f"Role: {user.get('Role')}")
+    # Sidebar Branding
+    st.markdown(f"<div style='text-align: center; margin-bottom: 10px;'>{LOGO_SVG}</div>", unsafe_allow_html=True)
+    st.markdown("<h2 style='text-align: center; color: #1e5631; margin-bottom: 0;'>Rupan Renewables</h2>", unsafe_allow_html=True)
+    st.markdown("<p style='text-align: center; color: #888; font-size: 0.85em;'>Biomass ERP System</p>", unsafe_allow_html=True)
     st.divider()
-
-    if st.button("Logout", use_container_width=True):
+    
+    # User Info
+    st.markdown(f"👤 **{user.get('Username')}**")
+    st.caption(f"Role: {user.get('Role')}")
+    
+    st.divider()
+    if st.button("🚪 Logout", use_container_width=True):
         auth.logout()
 
 # ============================================================
 # 5. DASHBOARD
 # ============================================================
 st.title("📊 Dashboard")
-st.caption(f"Welcome, **{user.get('Username')}**")
+st.caption(f"Welcome back, **{user.get('Username')}**. Here is your operations summary.")
 
 # ------------------------------------------------------------
 # 5a. LOAD DATA
@@ -93,7 +140,6 @@ df["Month"] = df["Month"].astype("string").str.strip()
 # 5b. FILTERS — Farm + Month/Year
 # ------------------------------------------------------------
 st.markdown("### 🎯 Filters")
-
 f1, f2, f3, f4 = st.columns([2, 2, 1.5, 1.5])
 
 farm_vals = sorted([v for v in df["Farm Name"].dropna().unique().tolist() if v not in ("", "None")])
@@ -101,9 +147,7 @@ has_blank = (df["Farm Name"].isna() | (df["Farm Name"] == "")).any()
 farm_opts = farm_vals + (["(blank)"] if has_blank else [])
 
 with f1:
-    selected_farms = st.multiselect(
-        "Farm Name", options=farm_opts, default=farm_opts
-    )
+    selected_farms = st.multiselect("Farm Name", options=farm_opts, default=farm_opts)
 
 year_vals = sorted([int(y) for y in df["Year"].dropna().unique().tolist()], reverse=True)
 month_names = ["January", "February", "March", "April", "May", "June",
@@ -155,63 +199,66 @@ fdf = df.loc[mask].copy()
 st.markdown("---")
 
 k1, k2, k3, k4, k5 = st.columns(5)
-
 total_rows = len(fdf)
 total_amt = fdf["Total amount"].sum() if not fdf.empty else 0
 total_qty = fdf["Qty"].sum() if not fdf.empty else 0
 total_farms = fdf["Farm Name"].nunique() if not fdf.empty else 0
 total_parties = fdf["Party name"].nunique() if not fdf.empty else 0
 
-with k1:
-    st.metric("🧾 Purchases", f"{total_rows:,}")
-with k2:
-    st.metric("💰 Total Amount", f"₹ {total_amt:,.0f}")
-with k3:
-    st.metric("📦 Total Qty", f"{total_qty:,.0f}")
-with k4:
-    st.metric("🏞️ Active Farms", f"{total_farms}")
-with k5:
-    st.metric("🤝 Suppliers", f"{total_parties}")
+with k1: st.metric("🧾 Purchases", f"{total_rows:,}")
+with k2: st.metric("💰 Total Amount", f"₹ {total_amt:,.0f}")
+with k3: st.metric("📦 Total Qty", f"{total_qty:,.0f}")
+with k4: st.metric("🏞️ Active Farms", f"{total_farms}")
+with k5: st.metric("🤝 Suppliers", f"{total_parties}")
 
 # ------------------------------------------------------------
-# 5e. TREND + FARM BREAKDOWN (side by side)
+# 5e. TREND + FARM BREAKDOWN
 # ------------------------------------------------------------
 st.markdown("---")
-
-chart_col, farm_col = st.columns([2, 1])
+chart_col, breakdown_col = st.columns([2, 1])
 
 with chart_col:
-    st.markdown("#### 📈 Monthly Spend Trend")
+    st.markdown("#### 📈 Recent Purchases Amount")
     trend = fdf.dropna(subset=["Date"]).copy()
     if trend.empty:
         st.info("No dated purchases to chart.")
     else:
-        trend["_period"] = trend["Date"].dt.to_period("M").astype(str)
-        trend_amt = trend.groupby("_period")["Total amount"].sum().reset_index()
-        trend_amt = trend_amt.sort_values("_period")
+        recent_trend = trend.sort_values("Date", ascending=True).tail(10)
+        recent_trend["_label"] = recent_trend["Date"].dt.strftime("%d-%b") + " (" + recent_trend["Purchase ID"].str[-3:] + ")"
+        
         st.bar_chart(
-            trend_amt.set_index("_period")["Total amount"],
+            recent_trend.set_index("_label")["Total amount"],
             use_container_width=True,
             height=320,
+            color="#2e7d32"  # Rupan Green
         )
 
-with farm_col:
-    st.markdown("#### 🏞️ By Farm")
+with breakdown_col:
+    st.markdown("#### 🏞️ Breakdown")
+    toggle = st.radio("Group by:", ["Farm", "Month"], horizontal=True, label_visibility="collapsed")
+    
     if fdf.empty:
         st.info("No data.")
     else:
-        farm_amt = (
-            fdf.groupby(fdf["Farm Name"].fillna("(blank)"))["Total amount"]
-            .sum()
-            .sort_values(ascending=False)
-            .reset_index()
-            .rename(columns={"Farm Name": "Farm", "Total amount": "Amount"})
+        if toggle == "Farm":
+            group_col = fdf["Farm Name"].fillna("(blank)")
+        else:
+            group_col = fdf["Month"].fillna("Unknown")
+
+        bdf = (
+            fdf.assign(_group=group_col)
+               .groupby("_group")["Total amount"]
+               .sum()
+               .sort_values(ascending=False)
+               .reset_index()
+               .rename(columns={"_group": "Category", "Total amount": "Amount"})
         )
-        # Show as horizontal bar chart
+        
         st.bar_chart(
-            farm_amt.set_index("Farm")["Amount"],
+            bdf.set_index("Category")["Amount"],
             use_container_width=True,
             height=320,
+            color="#ff9800"  # Energy Orange
         )
 
 # ------------------------------------------------------------
@@ -263,7 +310,7 @@ else:
     )
 
 # ------------------------------------------------------------
-# 5h. SYSTEM STATUS (kept from original)
+# 5h. SYSTEM STATUS
 # ------------------------------------------------------------
 with st.expander("⚙️ System Status"):
     try:
