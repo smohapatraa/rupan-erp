@@ -6,45 +6,85 @@ import io
 from core import sheets_db
 from core import auth
 
-# Match the pattern of your other pages
 auth.require_login()
 
 st.title("⬇️ Purchase Register — Filter & Download")
 
+# Manual refresh — useful after new entries
+if st.button("🔄 Refresh data"):
+    st.cache_data.clear()
+    st.rerun()
+
 # ------------------------------------------------------------
-# 1. LOAD DATA using YOUR existing helper
+# 1. LOAD DATA — purchases + purchase_items
 # ------------------------------------------------------------
 @st.cache_data(ttl=300, show_spinner="Loading purchases…")
-def load_purchases():
-    return sheets_db.list_all("purchases")
+def load_data():
+    return sheets_db.list_all("purchases"), sheets_db.list_all("purchase_items")
 
 try:
-    rows = load_purchases()
+    purchase_rows, item_rows = load_data()
 except Exception as e:
-    st.error(f"Failed to load purchases: {e}")
+    st.error(f"Failed to load data: {e}")
     st.stop()
 
-if not rows:
+if not purchase_rows:
     st.info("No purchases recorded yet.")
     st.stop()
 
-df = pd.DataFrame(rows)
+df = pd.DataFrame(purchase_rows)
+items_df = pd.DataFrame(item_rows) if item_rows else pd.DataFrame(
+    columns=["Purchase ID", "Item"]
+)
 
 # ------------------------------------------------------------
-# 2. TYPE CLEANUP
-#    Date is a string like "2026-11-11 00:00:00" from Sheets
+# 2. RESOLVE ITEM COLUMN
+#    - single line item   -> real item name
+#    - multiple line items -> comma-joined list
+#    - no line items      -> keep original Item value
+# ------------------------------------------------------------
+def resolve_item_names(purchases: pd.DataFrame, items: pd.DataFrame) -> pd.Series:
+    if items.empty or "Purchase ID" not in items.columns:
+        return purchases["Item"].astype("string")
+
+    items = items.copy()
+    items["Purchase ID"] = items["Purchase ID"].astype(str).str.strip()
+    items["Item"] = items["Item"].astype("string").str.strip()
+
+    grouped = (
+        items.loc[items["Item"].notna() & (items["Item"] != "")]
+             .drop_duplicates(subset=["Purchase ID", "Item"])
+             .groupby("Purchase ID")["Item"]
+             .apply(lambda s: ", ".join(s.tolist()))
+    )
+
+    orig = purchases["Item"].astype("string")
+    pid  = purchases["Purchase ID"].astype("string").str.strip()
+
+    resolved = orig.copy()
+    for i, (p, o) in enumerate(zip(pid, orig)):
+        if p in grouped.index:
+            names = grouped.loc[p]
+            if isinstance(names, pd.Series):
+                names = ", ".join(names.tolist())
+            resolved.iloc[i] = names
+    return resolved
+
+df["Item"] = resolve_item_names(df, items_df)
+
+# ------------------------------------------------------------
+# 3. TYPE CLEANUP
 # ------------------------------------------------------------
 df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
 df["Year"] = pd.to_numeric(df.get("Year"), errors="coerce")
 df["Farm Name"] = df["Farm Name"].astype("string").str.strip()
 
 # ------------------------------------------------------------
-# 3. FILTERS — Farm name + Period (Month+Year or Date range)
+# 4. FILTERS — Farm name + Period
 # ------------------------------------------------------------
 st.subheader("Filters")
 f1, f2, f3 = st.columns([2, 2, 2])
 
-# ---- Farm name (handle blanks the sheet actually has) ----
 farm_vals = sorted(
     [v for v in df["Farm Name"].dropna().unique().tolist() if v not in ("", "None")]
 )
@@ -53,18 +93,12 @@ farm_options = farm_vals + (["(blank)"] if has_blank else [])
 
 with f1:
     selected_farms = st.multiselect(
-        "Farm name",
-        options=farm_options,
-        default=farm_options,
-        help="Leave all selected to include every farm.",
+        "Farm name", options=farm_options, default=farm_options
     )
 
-# ---- Period mode ----
 with f2:
     period_mode = st.radio(
-        "Period filter by",
-        ["Month + Year", "Date range"],
-        horizontal=True,
+        "Period filter by", ["Month + Year", "Date range"], horizontal=True
     )
 
 if period_mode == "Month + Year":
@@ -84,8 +118,7 @@ if period_mode == "Month + Year":
 
     df["_period"] = df["Date"].dt.strftime("%Y-%m")
     mask_period = df["_period"].isin(selected_periods)
-
-else:  # Date range
+else:
     min_d = df["Date"].min().date()
     max_d = df["Date"].max().date()
     today = date.today()
@@ -104,7 +137,6 @@ else:  # Date range
 
     mask_period = (df["Date"].dt.date >= start_date) & (df["Date"].dt.date <= end_date)
 
-# ---- Farm mask (include blanks if chosen) ----
 include_blank = "(blank)" in selected_farms
 mask_farm = df["Farm Name"].isin([f for f in selected_farms if f != "(blank)"])
 if include_blank:
@@ -119,13 +151,13 @@ st.caption(
 )
 
 # ------------------------------------------------------------
-# 4. PREVIEW — all headers
+# 5. PREVIEW
 # ------------------------------------------------------------
 st.subheader("Preview")
 st.dataframe(filtered, use_container_width=True, hide_index=True, height=420)
 
 # ------------------------------------------------------------
-# 5. DOWNLOAD
+# 6. DOWNLOAD
 # ------------------------------------------------------------
 st.subheader("Download")
 
