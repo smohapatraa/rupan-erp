@@ -4,55 +4,26 @@ from datetime import date
 from core import auth
 from core import sheets_db
 
-# Force hide the Fork button, GitHub icon, and menu
-hide_streamlit_style = """
-<style>
-/* Hide the main menu (three dots) */
-#MainMenu {visibility: hidden;}
-
-/* Hide the footer and header */
-footer {visibility: hidden;}
-header {visibility: hidden;}
-
-/* Force hide the GitHub icon and Fork button on Community Cloud (core code) */
-.stApp [data-testid="stToolbar"] {visibility: hidden;}
-.css-1jc7ptx, .e1ewe7hr3, .viewerBadge_container__1QSob, 
-.styles_viewerBadge__1yB5_, .viewerBadge_link__1S137, 
-.viewerBadge_text__1JaDK { display: none; }
-
-/* Force hide the top-right corner button container */
-div[data-testid="stToolbar"] > div:first-child { display: none; }
-</style>
-"""
-st.markdown(hide_streamlit_style, unsafe_allow_html=True)
-
 # 1. Page Configuration
 st.set_page_config(
     page_title="Rupan Renewables ERP",
     page_icon="🌱",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="expanded"  # <--- Forces sidebar to be open by default
 )
 
 # ------------------------------------------------------------
-# CUSTOM CSS
+# SAFE CSS: Hide Fork/GitHub & Footer (Keeps Sidebar Safe)
 # ------------------------------------------------------------
 st.markdown("""
 <style>
-    /* Main layout tweaks */
-    .block-container { padding-top: 2rem; }
+    /* Hides the top right menu (Fork, GitHub, 3-dots) */
+    .stApp [data-testid="stToolbar"] {visibility: hidden;}
     
-    /* Login box styling */
-    .login-container {
-        background-color: #ffffff;
-        padding: 2rem;
-        border-radius: 12px;
-        box-shadow: 0 10px 20px rgba(0,0,0,0.05);
-        border-top: 6px solid #2e7d32;
-    }
-    
-    /* Hide default streamlit menu and footer */
+    /* Hides the main menu */
     #MainMenu {visibility: hidden;}
+    
+    /* Hides the footer */
     footer {visibility: hidden;}
 </style>
 """, unsafe_allow_html=True)
@@ -66,11 +37,14 @@ if st.session_state["user"] is None:
     col1, col2, col3 = st.columns([1, 2, 1])
     
     with col2:
-        # --- REAL LOGO HERE ---
-        # We use columns to center the logo
-        logo_col1, logo_col2, logo_col3 = st.columns([1, 2, 1])
-        with logo_col2:
-            st.image("logo.png", use_container_width=True) 
+        # --- LOGO & BRANDING ---
+        # If you have logo.png in your repo, it will show it. Otherwise, it shows text.
+        try:
+            logo_col1, logo_col2, logo_col3 = st.columns([1, 2, 1])
+            with logo_col2:
+                st.image("logo.png", use_container_width=True) 
+        except:
+            pass # Skips if logo.png is not found
             
         st.markdown("<h1 style='text-align: center; color: #1e5631; margin-bottom: 0;'>Rupan Renewables</h1>", unsafe_allow_html=True)
         st.markdown("<p style='text-align: center; color: #666; font-size: 1.1em; margin-top: 5px;'>Sustainable Energy Solutions for a Greener Tomorrow</p>", unsafe_allow_html=True)
@@ -79,7 +53,19 @@ if st.session_state["user"] is None:
         
         # Login Form inside a styled container
         with st.container():
-            st.markdown('<div class="login-container">', unsafe_allow_html=True)
+            st.markdown("""
+            <style>
+            .login-container {
+                background-color: #ffffff;
+                padding: 2rem;
+                border-radius: 12px;
+                box-shadow: 0 10px 20px rgba(0,0,0,0.05);
+                border-top: 6px solid #2e7d32;
+            }
+            </style>
+            <div class="login-container">
+            """, unsafe_allow_html=True)
+            
             with st.form("login_form"):
                 st.subheader("🔐 Enterprise Login")
                 username = st.text_input("Username", placeholder="Enter username")
@@ -106,7 +92,11 @@ user = st.session_state["user"]
 
 with st.sidebar:
     # Sidebar Branding
-    st.image("logo.png", use_container_width=True)
+    try:
+        st.image("logo.png", use_container_width=True)
+    except:
+        pass
+        
     st.markdown("<h2 style='text-align: center; color: #1e5631; margin-bottom: 0;'>Rupan Renewables</h2>", unsafe_allow_html=True)
     st.markdown("<p style='text-align: center; color: #888; font-size: 0.85em;'>Biomass ERP System</p>", unsafe_allow_html=True)
     st.divider()
