@@ -324,7 +324,7 @@ else:
         st.info("No Employee data available.")
 
 # ------------------------------------------------------------
-# 5g. SUPPLIER-WISE PERFORMANCE REPORT (NEW)
+# 5g. SUPPLIER-WISE ITEM REPORT (FIXED)
 # ------------------------------------------------------------
 st.markdown("---")
 st.markdown("#### 🏢 Supplier-wise Item Report")
@@ -332,36 +332,51 @@ st.markdown("#### 🏢 Supplier-wise Item Report")
 if fdf.empty:
     st.info("No data available for the selected filters.")
 else:
-    # 1. Merge purchase_items with the filtered purchases to get only relevant rows
-    # We match based on Purchase ID
-    merged_df = pd.merge(items_df, fdf[["Purchase ID"]], on="Purchase ID", how="inner")
+    # We rebuild the line items dynamically to handle both single and multi-item entries.
+    # This prevents any KeyError issues from merging tables.
     
-    # 2. For single-item purchases (which might not be in purchase_items yet), 
-    #    create dummy rows from the purchase header itself
-    single_items = fdf[~fdf["Purchase ID"].isin(merged_df["Purchase ID"])].copy()
-    if not single_items.empty:
-        # We use the header info for these
-        single_items = single_items.rename(columns={"Party name": "Party Name", "Item": "Item Name"})
-        single_df = single_items[["Purchase ID", "Party Name", "Item Name", "Qty", "Moisture %", "Total amount"]]
+    items_df["Purchase ID"] = items_df["Purchase ID"].astype(str).str.strip()
+    
+    # Identify which purchases have linked line items
+    linked_ids = set(items_df.loc[items_df["Purchase ID"] != "", "Purchase ID"].unique())
+    
+    exploded_rows = []
+    for _, p in fdf.iterrows():
+        pid = str(p["Purchase ID"]).strip()
+        header_item = str(p.get("Item", "") or "").strip()
         
-        # Merge existing line items with the new single items
-        merged_df = merged_df.rename(columns={"Party name": "Party Name", "Item": "Item Name"})
-        # Ensure all columns align
-        merged_df = merged_df[["Purchase ID", "Party Name", "Item Name", "Qty", "Moisture %", "Amount"]]
-        merged_df = pd.concat([merged_df, single_df.rename(columns={"Total amount": "Amount"})], ignore_index=True)
-    else:
-        merged_df = merged_df.rename(columns={"Party name": "Party Name", "Item": "Item Name", "Amount": "Amount"})
+        # If it's a multi-item purchase with linked items
+        if pid in linked_ids:
+            sub = items_df[items_df["Purchase ID"] == pid]
+            for _, li in sub.iterrows():
+                exploded_rows.append({
+                    "Supplier Name": p.get("Party name", ""),
+                    "Item": str(li.get("Item", "")).strip(),
+                    "Qty": pd.to_numeric(li.get("Qty"), errors="coerce"),
+                    "Moisture %": pd.to_numeric(li.get("Moisture %"), errors="coerce"),
+                    "Amount": pd.to_numeric(li.get("Amount"), errors="coerce"),
+                })
+        else:
+            # If it's a single-item purchase (or legacy without line items)
+            if header_item and header_item.lower() not in ("", "multiple items"):
+                exploded_rows.append({
+                    "Supplier Name": p.get("Party name", ""),
+                    "Item": header_item,
+                    "Qty": pd.to_numeric(p.get("Qty"), errors="coerce"),
+                    "Moisture %": pd.to_numeric(p.get("Moisture %"), errors="coerce"),
+                    "Amount": pd.to_numeric(p.get("Total amount"), errors="coerce"), 
+                })
 
-    # Clean numeric columns
-    for col in ["Qty", "Moisture %", "Amount"]:
-        merged_df[col] = pd.to_numeric(merged_df[col], errors="coerce").fillna(0)
+    exploded_df = pd.DataFrame(exploded_rows)
 
-    if merged_df.empty:
-        st.info("No item data found for these purchases.")
+    if exploded_df.empty:
+        st.info("No specific item data found for these purchases.")
     else:
-        # Group by Supplier and Item
+        exploded_df = exploded_df.fillna({"Qty": 0, "Moisture %": 0, "Amount": 0})
+        
         supp_rows = []
-        for (party, item), group in merged_df.groupby(["Party Name", "Item Name"]):
+        # Group by BOTH Supplier and Item
+        for (party, item), group in exploded_df.groupby(["Supplier Name", "Item"]):
             if not party or party == "None":
                 continue
                 
@@ -381,8 +396,8 @@ else:
                 "Supplier Name": party,
                 "Item Purchased": item,
                 "Qty": t_qty,
-                "Average Moist %": w_moisture,
-                "Net Qty (After Moist)": net_qty,
+                "Avg Moist %": w_moisture,
+                "Net Qty": net_qty,
                 "Total Amount": t_amt,
                 "Avg / KG (Net Qty)": avg_per_kg
             })
@@ -390,15 +405,14 @@ else:
         if supp_rows:
             supp_df = pd.DataFrame(supp_rows)
             
-            # Sort by Supplier Name, then by Total Amount
+            # Sort by Supplier Name
             supp_df = supp_df.sort_values(["Supplier Name", "Total Amount"], ascending=[True, False])
             
-            # Display
             st.dataframe(
                 supp_df.style.format({
                     "Qty": "{:,.2f}",
-                    "Average Moist %": "{:.2f}%",
-                    "Net Qty (After Moist)": "{:,.2f}",
+                    "Avg Moist %": "{:.2f}%",
+                    "Net Qty": "{:,.2f}",
                     "Total Amount": "₹ {:,.2f}",
                     "Avg / KG (Net Qty)": "₹ {:,.2f}"
                 }, na_rep=""),
