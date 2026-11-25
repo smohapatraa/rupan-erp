@@ -28,7 +28,7 @@ if st.session_state["user"] is None:
         except:
             pass 
             
-        st.markdown("<h1 style='text-align: center; color: #1e5631; margin-bottom: 0;'>Rupan Renewables</h1>", unsafe_allow_html=True)
+        
         st.markdown("<p style='text-align: center; color: #666; font-size: 1.1em; margin-top: 5px;'>Sustainable Energy Solutions for a Greener Tomorrow</p>", unsafe_allow_html=True)
         
         st.write("") 
@@ -77,7 +77,7 @@ with st.sidebar:
     except:
         pass
         
-    st.markdown("<h2 style='text-align: center; color: #1e5631; margin-bottom: 0;'>Rupan Renewables</h2>", unsafe_allow_html=True)
+    
     st.markdown("<p style='text-align: center; color: #888; font-size: 0.85em;'>Biomass ERP System</p>", unsafe_allow_html=True)
     st.divider()
     
