@@ -13,19 +13,8 @@ st.set_page_config(
 )
 
 # ------------------------------------------------------------
-# CUSTOM BRANDING & CSS
+# CUSTOM CSS
 # ------------------------------------------------------------
-# Brand-matched SVG: Green leaf (sustainability) + Orange Sun (energy)
-LOGO_SVG = """
-<svg width="80" height="80" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
-  <circle cx="50" cy="50" r="48" fill="#f4fbf4" stroke="#2e7d32" stroke-width="2"/>
-  <path d="M 30 70 Q 50 40 70 70" fill="none" stroke="#2e7d32" stroke-width="6" stroke-linecap="round"/>
-  <path d="M 50 70 Q 50 45 50 30" fill="none" stroke="#2e7d32" stroke-width="4" stroke-linecap="round"/>
-  <circle cx="50" cy="28" r="8" fill="#ff9800"/>
-  <path d="M 50 15 L 50 18 M 50 38 L 50 41 M 37 28 L 40 28 M 60 28 L 63 28" stroke="#ff9800" stroke-width="2.5" stroke-linecap="round"/>
-</svg>
-"""
-
 st.markdown("""
 <style>
     /* Main layout tweaks */
@@ -55,8 +44,12 @@ if st.session_state["user"] is None:
     col1, col2, col3 = st.columns([1, 2, 1])
     
     with col2:
-        # Branding Header
-        st.markdown(f"<div style='text-align: center; margin-bottom: 20px;'>{LOGO_SVG}</div>", unsafe_allow_html=True)
+        # --- REAL LOGO HERE ---
+        # We use columns to center the logo
+        logo_col1, logo_col2, logo_col3 = st.columns([1, 2, 1])
+        with logo_col2:
+            st.image("logo.png", use_container_width=True) 
+            
         st.markdown("<h1 style='text-align: center; color: #1e5631; margin-bottom: 0;'>Rupan Renewables</h1>", unsafe_allow_html=True)
         st.markdown("<p style='text-align: center; color: #666; font-size: 1.1em; margin-top: 5px;'>Sustainable Energy Solutions for a Greener Tomorrow</p>", unsafe_allow_html=True)
         
@@ -91,7 +84,7 @@ user = st.session_state["user"]
 
 with st.sidebar:
     # Sidebar Branding
-    st.markdown(f"<div style='text-align: center; margin-bottom: 10px;'>{LOGO_SVG}</div>", unsafe_allow_html=True)
+    st.image("logo.png", use_container_width=True)
     st.markdown("<h2 style='text-align: center; color: #1e5631; margin-bottom: 0;'>Rupan Renewables</h2>", unsafe_allow_html=True)
     st.markdown("<p style='text-align: center; color: #888; font-size: 0.85em;'>Biomass ERP System</p>", unsafe_allow_html=True)
     st.divider()
@@ -230,7 +223,7 @@ with chart_col:
             recent_trend.set_index("_label")["Total amount"],
             use_container_width=True,
             height=320,
-            color="#2e7d32"  # Rupan Green
+            color="#2e7d32"
         )
 
 with breakdown_col:
@@ -258,7 +251,7 @@ with breakdown_col:
             bdf.set_index("Category")["Amount"],
             use_container_width=True,
             height=320,
-            color="#ff9800"  # Energy Orange
+            color="#ff9800"
         )
 
 # ------------------------------------------------------------
