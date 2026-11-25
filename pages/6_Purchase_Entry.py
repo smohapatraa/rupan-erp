@@ -22,14 +22,14 @@ if not parties or not items:
     st.stop()
 
 with st.form("multi_item_purchase_form"):
-    
+
     # --- SECTION 1: INVOICE HEADER ---
     st.subheader("1. Invoice Details")
     c1, c2, c3, c4 = st.columns(4)
     with c1: inv_date = st.date_input("Date", value=date.today())
     with c2: inv_no = st.text_input("Invoice No *")
     with c3: party_name = st.selectbox("Party Name *", list(parties.keys()))
-    with c4: 
+    with c4:
         farm_name = st.selectbox("Farm Name", ["None"] + list(farms.keys()))
         farm_id = farms[farm_name]["Farm ID"] if farm_name != "None" else ""
 
@@ -54,7 +54,7 @@ with st.form("multi_item_purchase_form"):
     # --- SECTION 2: MULTI-ITEM GRID ---
     st.subheader("2. Line Items")
     st.write("Click the '+' at the bottom of the table to add a new row.")
-    
+
     default_data = pd.DataFrame([
         {"Item": list(items.keys())[0], "Qty": 1.00, "Moisture %": 0.00, "Price": 0.00, "CGST %": 0.00, "SGST %": 0.00, "IGST %": 0.00, "Transport Amt": 0.00}
     ])
@@ -83,14 +83,14 @@ if submitted:
     if not inv_no:
         st.error("Invoice Number is required.")
         st.stop()
-        
+
     if edited_df.empty:
         st.error("Please add at least one item.")
         st.stop()
 
     # Auto-fill the empty row that '+' creates
     edited_df["Item"] = edited_df["Item"].fillna(list(items.keys())[0])
-    
+
     for i in range(1, len(edited_df)):
         if pd.isna(edited_df.at[i, "Qty"]):
             edited_df.at[i, "Item"] = edited_df.at[i-1, "Item"]
@@ -104,7 +104,7 @@ if submitted:
 
     # Remove empty rows
     edited_df = edited_df[edited_df["Qty"] > 0]
-    
+
     if edited_df.empty:
         st.error("Please enter a Quantity greater than 0.")
         st.stop()
@@ -118,9 +118,9 @@ if submitted:
     total_moisture_qty = 0.0
     total_actual_qty = 0.0
     weighted_moisture = 0.0
-    
+
     line_items_to_save = []
-    
+
     try:
         for index, row in edited_df.iterrows():
             item_name = row["Item"]
@@ -131,16 +131,16 @@ if submitted:
             sgst_pct = float(row["SGST %"]) if not pd.isna(row["SGST %"]) else 0.0
             igst_pct = float(row["IGST %"]) if not pd.isna(row["IGST %"]) else 0.0
             transport_amt = float(row["Transport Amt"]) if not pd.isna(row["Transport Amt"]) else 0.0
-            
+
             moisture_qty = qty * (moisture_pct / 100.0)
             actual_qty = qty - moisture_qty
             amount = qty * price
-            
+
             cgst_amt = amount * (cgst_pct / 100.0)
             sgst_amt = amount * (sgst_pct / 100.0)
             igst_amt = amount * (igst_pct / 100.0)
             row_total = amount + cgst_amt + sgst_amt + igst_amt + transport_amt
-            
+
             total_base_amount += amount
             total_cgst += cgst_amt
             total_sgst += sgst_amt
@@ -150,7 +150,7 @@ if submitted:
             total_moisture_qty += moisture_qty
             total_actual_qty += actual_qty
             weighted_moisture += (moisture_pct * qty)
-            
+
             unit = items[item_name].get("Unit", "Kg")
             line_items_to_save.append({
                 "Item ID": items[item_name]["Item ID"],
@@ -171,15 +171,21 @@ if submitted:
         gross_total = total_base_amount + total_cgst + total_sgst + total_igst + total_transport + other_charges
         rounded_total = round(gross_total)
         round_off_diff = rounded_total - gross_total
-        
+
         avg_moisture = (weighted_moisture / total_qty) if total_qty > 0 else 0.0
         avg_price = (total_base_amount / total_qty) if total_qty > 0 else 0.0
+
+        # --- NEW: use real item name when there is exactly ONE line item ---
+        is_single = (len(line_items_to_save) == 1)
+        header_item_name = line_items_to_save[0]["Item"] if is_single else "Multiple Items"
+        header_item_id = line_items_to_save[0]["Item ID"] if is_single else ""
 
         purchase_data = {
             "Month": inv_date.strftime("%B"), "Year": inv_date.strftime("%Y"), "Date": inv_date.strftime("%Y-%m-%d"),
             "Invoice no": inv_no, "Party ID": parties[party_name]["Party ID"], "Party name": party_name,
-            "Item ID": "", "Item": "Multiple Items", 
-            "Moisture %": avg_moisture, "Qty": total_qty, "Unit": "Mixed", "price": avg_price, "Amount": total_base_amount,
+            "Item ID": header_item_id, "Item": header_item_name,
+            "Moisture %": avg_moisture, "Qty": total_qty, "Unit": "Mixed" if not is_single else line_items_to_save[0]["Unit"],
+            "price": avg_price, "Amount": total_base_amount,
             "CGST": total_cgst, "SGST": total_sgst, "IGST": total_igst, "ROUND OFF": round_off_diff, "Total amount": rounded_total,
             "Moisture Qty": total_moisture_qty, "Actual Qty": total_actual_qty,
             "Employee ID": employees[employee_name]["Employee ID"] if employee_name != "N/A" else "", "Employee Name": employee_name,
@@ -190,7 +196,7 @@ if submitted:
             "Farm ID": farm_id, "Farm Name": farm_name,
             "Invoice Link": invoice_link
         }
-        
+
         saved_purchase = sheets_db.insert_row("purchases", purchase_data, user_id=user["User ID"])
         master_id = saved_purchase["Purchase ID"]
 
@@ -198,9 +204,12 @@ if submitted:
             item_data["Purchase ID"] = master_id
             sheets_db.insert_row("purchase_items", item_data, user_id=user["User ID"])
 
+        # Clear cached data so download pages show the new record immediately
+        st.cache_data.clear()
+
         st.balloons()
         st.success(f"✅ Invoice {inv_no} Saved!")
-        st.info(f"Master Purchase ID: **{master_id}** | {len(line_items_to_save)} line items saved to purchase_items tab.")
-        
+        st.info(f"Master Purchase ID: **{master_id}** | {len(line_items_to_save)} line item(s) saved to purchase_items tab.")
+
     except Exception as e:
         st.error(f"Error saving purchase: {e}")
