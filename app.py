@@ -4,6 +4,28 @@ from datetime import date
 from core import auth
 from core import sheets_db
 
+# Force hide the Fork button, GitHub icon, and menu
+hide_streamlit_style = """
+<style>
+/* Hide the main menu (three dots) */
+#MainMenu {visibility: hidden;}
+
+/* Hide the footer and header */
+footer {visibility: hidden;}
+header {visibility: hidden;}
+
+/* Force hide the GitHub icon and Fork button on Community Cloud (core code) */
+.stApp [data-testid="stToolbar"] {visibility: hidden;}
+.css-1jc7ptx, .e1ewe7hr3, .viewerBadge_container__1QSob, 
+.styles_viewerBadge__1yB5_, .viewerBadge_link__1S137, 
+.viewerBadge_text__1JaDK { display: none; }
+
+/* Force hide the top-right corner button container */
+div[data-testid="stToolbar"] > div:first-child { display: none; }
+</style>
+"""
+st.markdown(hide_streamlit_style, unsafe_allow_html=True)
+
 # 1. Page Configuration
 st.set_page_config(
     page_title="Rupan Renewables ERP",
